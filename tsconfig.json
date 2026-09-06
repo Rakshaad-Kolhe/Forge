@@ -6,6 +6,7 @@
     { "path": "packages/logging" },
     { "path": "packages/pipeline" },
     { "path": "packages/database" },
+    { "path": "packages/redis" },
     { "path": "apps/api" },
     { "path": "apps/scheduler" },
     { "path": "apps/worker" },

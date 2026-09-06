@@ -1,81 +1,71 @@
-# PR 05: Transactional Domain Persistence & State Integrity
+# PR 06: Redis Coordination Foundation
 
 ## Summary
 
-Establishes an airtight transactional persistence boundary between Forge V2's domain state machines (`@forge/pipeline`), repository layer (`@forge/database`), and PostgreSQL database.
+Establishes Forge V2's Redis coordination foundation following **ADR-003 (Redis for Transient Distributed Coordination)**. This PR introduces the `@forge/redis` shared infrastructure package with connection management, active health checks, graceful shutdown, generic coordination primitives, TTL support, atomic operation support, JSON serialization helpers, structured logging, and comprehensive integration testing against real Redis.
 
-This PR ensures that persistence mechanisms **cannot accidentally bypass domain lifecycle semantics**. It eliminates direct status-bypass methods, validates all state transitions against existing persistent records before issuing SQL, guarantees terminal state immutability at the database layer, ensures atomic aggregate persistence for pipeline runs, and validates domain reconstruction against corrupted database rows.
+Crucially:
+- **PostgreSQL remains the sole durable source of truth.**
+- **Redis serves strictly as a transient distributed coordination layer.**
+- Losing, restarting, or flushing Redis will never corrupt or erase historical records in PostgreSQL.
 
 ---
 
-## Architectural Changes & State Integrity Contracts
+## Architectural Changes & Primitives
 
 ```text
-Caller (Domain Model Mutation)
-       │
-       ▼
-sm.transitionTo(nextStatus)   ──► [Pure In-Memory State Machine Validation]
-       │
-       ▼
-repository.save(entity)
-       │
-       ▼
-Query PostgreSQL Row Status: SELECT status FROM table WHERE id = $1
-       │
-       ├── Row exists & status changed:
-       │       │
-       │       ▼
-       │   createStateMachine(id, existingStatus).transitionTo(entity.status)
-       │       │
-       │       ├── Permitted ──► Issue Parameterized SQL UPDATE
-       │       │
-       │       └── Forbidden ──► Throws InvalidStateTransitionError
-       │                         (Zero SQL executed; DB row unchanged)
-       │
-       └── Aggregate Atomicity:
-               │
-               ▼
-           withTransaction (PoolClient BEGIN ... COMMIT / ROLLBACK)
-           (PipelineRun + all constituent Jobs roll back together on failure)
+       ┌────────────────────────┐
+       │       PostgreSQL       │
+       │  AUTHORITATIVE STATE   │
+       │   - Pipelines          │
+       │   - Pipeline Runs      │
+       │   - Jobs               │
+       │   - Job Attempts       │
+       │   - Audit & History    │
+       └────────────────────────┘
+
+                   ▲
+                   │ (Authoritative reconciliation)
+                   ▼
+
+       ┌────────────────────────┐
+       │         Redis          │
+       │ TRANSIENT COORDINATION │
+       │   - Job Queues (Future)│
+       │   - Ephemeral Leases   │
+       │   - Distributed Sync   │
+       │   - Atomic Claims      │
+       └────────────────────────┘
 ```
 
-1. **Elimination of Bypass Methods**:
-   - Removed `updateStatus(id, status)` from `PipelineRunRepository` and `JobRepository` contracts and PostgreSQL implementations.
-   - Callers must load the domain entity, execute domain state machine transitions, and persist via `save()`.
-
-2. **Pre-Save State Machine Validation**:
-   - `PgPipelineRunRepository.save(run)`, `PgJobRepository.save(job)`, and `PgJobAttemptRepository.save(attempt)` check existing persistent status before updating.
-   - If status has changed, authoritative domain state machines (`createPipelineRunStateMachine`, `createJobStateMachine`, `createJobAttemptStateMachine`) validate the transition.
-   - Same-state saves proceed idempotently without throwing.
-
-3. **Terminal State Immutability**:
-   - Terminal states (`SUCCEEDED`, `FAILED`, `CANCELLED`, `TIMED_OUT`) cannot be regressed by any caller.
-   - Any attempt to regress a terminal state throws `InvalidStateTransitionError`, leaving the database row untouched.
-
-4. **Atomic Aggregate Persistence**:
-   - `PgPipelineRunRepository.save(run)` wraps the persistence of the run and its constituent jobs in a PostgreSQL ACID transaction.
-   - If any constituent job fails validation or encounters an invalid transition, the entire transaction rolls back cleanly with zero partial state.
-
-5. **Domain Reconstruction Integrity**:
-   - Entities rehydrated from database rows validate DAG acyclicity, step dependency existence, and attempt numbering.
-   - Corrupted rows (e.g. cyclic DAGs injected into `pipelines.steps`) throw typed `PersistenceError`.
+1. **Client Technology**: Selected `ioredis` (^5.6.0) for robust TypeScript support, native promise API, rich event-driven lifecycle (`connect`, `ready`, `close`, `reconnecting`, `error`), and atomic command execution.
+2. **Configuration**: Extended `@forge/config` and `@forge/contracts` with `REDIS_URL` (default: `redis://127.0.0.1:6379`).
+3. **Local Infrastructure**: Added `redis:7.2-alpine` to `docker-compose.yml` with health checks.
+4. **Connection Lifecycle**: Created `createRedisClient(config, logger)` providing idempotent connection management, active `healthCheck()` via `PING`, and graceful shutdown (`close()`).
+5. **Generic Coordination Primitives**: Implemented `get`, `set` (with `EX`, `PX`, `NX`, `XX`), `del`, `exists`, `expire`, and `ttl`.
+6. **Atomic Operation Primitives**: Implemented `setNx` (mutual exclusion primitive), `incr`, `decr`, and Lua `eval` execution.
+7. **Key Naming & Serialization**: Established `createRedisKey` (`forge:{namespace}:{...}`) and deterministic `serializeJson`/`deserializeJson` with type safety.
+8. **Real Redis Integration Tests**: Verified against real Redis without mocks, using isolated run prefixes (`forge:test_{timestamp}_{rand}:*`) without destructive `FLUSHALL`.
 
 ---
 
 ## What is NOT Implemented (Strict Scope Boundaries)
 
-- **NO Redis** (transient queues, locks, and pub/sub remain future scope).
-- **NO Worker execution or dispatch logic**.
-- **NO Scheduler dispatch loops or lease acquisition**.
-- **NO Docker / Kubernetes executors**.
-- **NO WebSockets or HTTP pipeline trigger endpoints**.
+In accordance with PR 06 constraints:
+- **NO Job Queue implementation** (FIFO, priority queues, enqueue/dequeue belong to future queue PR).
+- **NO Distributed locks or mutexes** (generic `setNx` is provided as a low-level primitive, not a distributed lock).
+- **NO Worker leases or lease renewal loops**.
+- **NO Pub/Sub event architecture or WebSocket fanout**.
+- **NO Caching layer**.
+- **NO Scheduler or Worker dispatch logic**.
 
 ---
 
 ## Verification Results
 
 - `npm run lint`: **PASS** (0 errors, 0 warnings)
-- `npm run format:check`: **PASS** (All files match Prettier style)
+- `npm run format:check`: **PASS** (All matched files use Prettier style)
 - `npm run typecheck`: **PASS** (`tsc -b` compiled all packages and applications)
-- `npm test`: **PASS** (16 test suites, 103/103 tests passing)
-- `npm run build`: **PASS** (All workspaces, apps, and Next.js built cleanly)
+- `npm test`: **PASS** (18 test suites, 133/133 tests passing, including 30 Redis tests)
+- `npm run build`: **PASS** (All packages, shells, and Next.js built cleanly)
+- Manual smoke test against real Redis: **PASS** (Connect -> PING -> SET -> GET -> EXPIRE -> TTL -> DEL -> verify absence -> Close)
