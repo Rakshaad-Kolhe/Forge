@@ -1,12 +1,14 @@
 import {
   createJobId,
+  createJobStateMachine,
   createPipelineRunId,
+  InvalidStateTransitionError,
   Job,
   type JobId,
   type JobStatus,
   type PipelineRunId,
 } from '@forge/pipeline';
-import { ConstraintViolationError, EntityNotFoundError, PersistenceError } from '../errors.js';
+import { ConstraintViolationError, PersistenceError } from '../errors.js';
 import type { DatabaseClient, JobRow } from '../types.js';
 import type { JobRepository } from './contracts/job-repository.contract.js';
 import { PgJobAttemptRepository } from './pg-job-attempt-repository.js';
@@ -29,6 +31,21 @@ export class PgJobRepository implements JobRepository {
   }
 
   public async save(job: Job): Promise<void> {
+    // Pre-save state machine transition validation
+    const existingRes = await this.client.query<{ status: string }>(
+      'SELECT status FROM jobs WHERE id = $1;',
+      [job.id],
+    );
+
+    const existingRow = existingRes.rows[0];
+    if (existingRow) {
+      const existingStatus = existingRow.status as JobStatus;
+      if (existingStatus !== job.status) {
+        const sm = createJobStateMachine(job.id, existingStatus);
+        sm.transitionTo(job.status);
+      }
+    }
+
     const dependsOnJson = JSON.stringify([...job.dependsOn]);
 
     try {
@@ -47,7 +64,11 @@ export class PgJobRepository implements JobRepository {
         await this.attemptRepo.save(attempt);
       }
     } catch (err: unknown) {
-      if (err instanceof ConstraintViolationError || err instanceof PersistenceError) {
+      if (
+        err instanceof ConstraintViolationError ||
+        err instanceof PersistenceError ||
+        err instanceof InvalidStateTransitionError
+      ) {
         throw err;
       }
       const dbErr = err as { code?: string; constraint?: string; detail?: string };
@@ -124,29 +145,6 @@ export class PgJobRepository implements JobRepository {
       if (err instanceof PersistenceError) throw err;
       throw new PersistenceError(
         `Failed to find jobs for pipeline run "${pipelineRunId}": ${(err as Error).message}`,
-        err as Error,
-      );
-    }
-  }
-
-  public async updateStatus(id: JobId, status: JobStatus): Promise<void> {
-    if (!VALID_JOB_STATUSES.has(status)) {
-      throw new PersistenceError(`Invalid JobStatus "${status}" provided for update`);
-    }
-
-    try {
-      const res = await this.client.query('UPDATE jobs SET status = $1 WHERE id = $2;', [
-        status,
-        id,
-      ]);
-
-      if ((res.rowCount ?? 0) === 0) {
-        throw new EntityNotFoundError('Job', id);
-      }
-    } catch (err) {
-      if (err instanceof EntityNotFoundError || err instanceof PersistenceError) throw err;
-      throw new PersistenceError(
-        `Failed to update status for job "${id}": ${(err as Error).message}`,
         err as Error,
       );
     }

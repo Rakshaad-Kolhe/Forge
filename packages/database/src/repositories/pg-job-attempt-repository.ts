@@ -1,6 +1,8 @@
 import {
   createJobAttemptId,
+  createJobAttemptStateMachine,
   createJobId,
+  InvalidStateTransitionError,
   JobAttempt,
   type JobAttemptId,
   type JobAttemptStatus,
@@ -23,6 +25,21 @@ export class PgJobAttemptRepository implements JobAttemptRepository {
   constructor(private readonly client: DatabaseClient) {}
 
   public async save(attempt: JobAttempt): Promise<void> {
+    // Pre-save state machine transition validation
+    const existingRes = await this.client.query<{ status: string }>(
+      'SELECT status FROM job_attempts WHERE id = $1 OR (job_id = $2 AND attempt_number = $3);',
+      [attempt.id, attempt.jobId, attempt.attemptNumber],
+    );
+
+    const existingRow = existingRes.rows[0];
+    if (existingRow) {
+      const existingStatus = existingRow.status as JobAttemptStatus;
+      if (existingStatus !== attempt.status) {
+        const sm = createJobAttemptStateMachine(attempt.id, existingStatus);
+        sm.transitionTo(attempt.status);
+      }
+    }
+
     try {
       await this.client.query(
         `
@@ -49,6 +66,13 @@ export class PgJobAttemptRepository implements JobAttemptRepository {
         ],
       );
     } catch (err: unknown) {
+      if (
+        err instanceof ConstraintViolationError ||
+        err instanceof PersistenceError ||
+        err instanceof InvalidStateTransitionError
+      ) {
+        throw err;
+      }
       const dbErr = err as { code?: string; constraint?: string; detail?: string };
       if (dbErr?.code === '23505') {
         throw new ConstraintViolationError(

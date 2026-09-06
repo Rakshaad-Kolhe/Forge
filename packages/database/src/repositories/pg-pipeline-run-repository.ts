@@ -1,13 +1,15 @@
 import {
   createPipelineId,
   createPipelineRunId,
+  createPipelineRunStateMachine,
+  InvalidStateTransitionError,
   PipelineRun,
   type PipelineId,
   type PipelineRunId,
   type PipelineRunStatus,
 } from '@forge/pipeline';
-import { ConstraintViolationError, EntityNotFoundError, PersistenceError } from '../errors.js';
-import type { DatabaseClient, PipelineRunRow } from '../types.js';
+import { ConstraintViolationError, PersistenceError } from '../errors.js';
+import type { DatabaseClient, DatabasePool, PipelineRunRow } from '../types.js';
 import type { PipelineRunRepository } from './contracts/pipeline-run-repository.contract.js';
 import { PgJobRepository } from './pg-job-repository.js';
 
@@ -29,6 +31,46 @@ export class PgPipelineRunRepository implements PipelineRunRepository {
   }
 
   public async save(run: PipelineRun): Promise<void> {
+    const isPool =
+      'connect' in this.client &&
+      typeof (this.client as DatabasePool).connect === 'function' &&
+      typeof (this.client as unknown as { release?: unknown }).release !== 'function';
+
+    if (isPool) {
+      const client = await (this.client as DatabasePool).connect();
+      try {
+        await client.query('BEGIN');
+        const txRepo = new PgPipelineRunRepository(client);
+        await txRepo.save(run);
+        await client.query('COMMIT');
+        return;
+      } catch (err) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // Ignore rollback error to allow original error to surface
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
+    // Pre-save state machine transition validation
+    const existingRes = await this.client.query<{ status: string }>(
+      'SELECT status FROM pipeline_runs WHERE id = $1;',
+      [run.id],
+    );
+
+    const existingRow = existingRes.rows[0];
+    if (existingRow) {
+      const existingStatus = existingRow.status as PipelineRunStatus;
+      if (existingStatus !== run.status) {
+        const sm = createPipelineRunStateMachine(run.id, existingStatus);
+        sm.transitionTo(run.status);
+      }
+    }
+
     try {
       await this.client.query(
         `
@@ -57,7 +99,11 @@ export class PgPipelineRunRepository implements PipelineRunRepository {
         await this.jobRepo.save(job);
       }
     } catch (err: unknown) {
-      if (err instanceof ConstraintViolationError || err instanceof PersistenceError) {
+      if (
+        err instanceof ConstraintViolationError ||
+        err instanceof PersistenceError ||
+        err instanceof InvalidStateTransitionError
+      ) {
         throw err;
       }
       const dbErr = err as { code?: string; constraint?: string; detail?: string };
@@ -127,38 +173,6 @@ export class PgPipelineRunRepository implements PipelineRunRepository {
       if (err instanceof PersistenceError) throw err;
       throw new PersistenceError(
         `Failed to find runs for pipeline "${pipelineId}": ${(err as Error).message}`,
-        err as Error,
-      );
-    }
-  }
-
-  public async updateStatus(
-    id: PipelineRunId,
-    status: PipelineRunStatus,
-    finishedAt?: string,
-  ): Promise<void> {
-    if (!VALID_RUN_STATUSES.has(status)) {
-      throw new PersistenceError(`Invalid PipelineRunStatus "${status}" provided for update`);
-    }
-
-    try {
-      const res = await this.client.query(
-        `
-        UPDATE pipeline_runs
-        SET status = $1,
-            finished_at = COALESCE($2, finished_at)
-        WHERE id = $3;
-      `,
-        [status, finishedAt ? new Date(finishedAt) : null, id],
-      );
-
-      if ((res.rowCount ?? 0) === 0) {
-        throw new EntityNotFoundError('PipelineRun', id);
-      }
-    } catch (err) {
-      if (err instanceof EntityNotFoundError || err instanceof PersistenceError) throw err;
-      throw new PersistenceError(
-        `Failed to update status for run "${id}": ${(err as Error).message}`,
         err as Error,
       );
     }

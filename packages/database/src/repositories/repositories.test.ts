@@ -178,7 +178,7 @@ describe('PostgreSQL Repositories Integration Tests', () => {
       expect(loadedJobs[1]?.dependsOn).toEqual(['setup']);
     });
 
-    it('updates pipeline run lifecycle status and timestamps', async () => {
+    it('updates pipeline run lifecycle status and timestamps through valid state transitions', async () => {
       const pipeline = new Pipeline({
         id: 'pipe-status-test',
         name: 'Status Test',
@@ -189,24 +189,108 @@ describe('PostgreSQL Repositories Integration Tests', () => {
       const run = PipelineRun.create(createPipelineRunId('run-status-1'), pipeline);
       await pipelineRunRepo.save(run);
 
-      const finishedAt = new Date().toISOString();
-      await pipelineRunRepo.updateStatus(run.id, 'RUNNING');
+      expect(run.status).toBe('PENDING');
 
+      // Valid transition: PENDING -> QUEUED
+      run.markQueued();
+      await pipelineRunRepo.save(run);
       let current = await pipelineRunRepo.findById(run.id);
-      expect(current!.status).toBe('RUNNING');
+      expect(current!.status).toBe('QUEUED');
 
-      await pipelineRunRepo.updateStatus(run.id, 'SUCCEEDED', finishedAt);
+      // Valid transition: QUEUED -> RUNNING
+      const startedAt = new Date().toISOString();
+      run.start(startedAt);
+      await pipelineRunRepo.save(run);
+      current = await pipelineRunRepo.findById(run.id);
+      expect(current!.status).toBe('RUNNING');
+      expect(current!.startedAt).toBeDefined();
+
+      // Valid transition: RUNNING -> SUCCEEDED
+      run.transitionTo('SUCCEEDED');
+      await pipelineRunRepo.save(run);
       current = await pipelineRunRepo.findById(run.id);
       expect(current!.status).toBe('SUCCEEDED');
       expect(current!.finishedAt).toBeDefined();
     });
 
-    it('rejects invalid pipeline run status updates with PersistenceError', async () => {
-      const invalidStatus =
-        'INVALID_STATUS' as unknown as import('@forge/pipeline').PipelineRunStatus;
-      await expect(
-        pipelineRunRepo.updateStatus(createPipelineRunId('run-fake'), invalidStatus),
-      ).rejects.toThrow(PersistenceError);
+    it('rejects terminal state regression (SUCCEEDED -> RUNNING) and preserves persistent state', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-terminal-test',
+        name: 'Terminal Test',
+        steps: [{ name: 'step', command: 'echo terminal' }],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-terminal-1'), pipeline);
+      run.markQueued();
+      run.start();
+      run.transitionTo('SUCCEEDED');
+      await pipelineRunRepo.save(run);
+
+      // Verify it is SUCCEEDED in database
+      const saved = await pipelineRunRepo.findById(run.id);
+      expect(saved!.status).toBe('SUCCEEDED');
+
+      // Create a mutated run object attempting to regress to RUNNING
+      const regressedRun = new PipelineRun({
+        id: run.id,
+        pipelineId: pipeline.id,
+        pipelineName: pipeline.name,
+        initialStatus: 'RUNNING',
+      });
+
+      // Attempting to save regressed run must throw InvalidStateTransitionError
+      await expect(pipelineRunRepo.save(regressedRun)).rejects.toThrow();
+
+      // Database must remain SUCCEEDED
+      const afterAttempt = await pipelineRunRepo.findById(run.id);
+      expect(afterAttempt!.status).toBe('SUCCEEDED');
+    });
+
+    it('rejects invalid state jumps (PENDING -> SUCCEEDED) and preserves persistent state', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-invalid-jump',
+        name: 'Invalid Jump Test',
+        steps: [{ name: 'step', command: 'echo jump' }],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-jump-1'), pipeline);
+      await pipelineRunRepo.save(run);
+      expect(run.status).toBe('PENDING');
+
+      // Attempt to save run directly transitioning to SUCCEEDED
+      const jumpedRun = new PipelineRun({
+        id: run.id,
+        pipelineId: pipeline.id,
+        pipelineName: pipeline.name,
+        initialStatus: 'SUCCEEDED',
+      });
+
+      await expect(pipelineRunRepo.save(jumpedRun)).rejects.toThrow();
+
+      const afterAttempt = await pipelineRunRepo.findById(run.id);
+      expect(afterAttempt!.status).toBe('PENDING');
+    });
+
+    it('allows same-state idempotent saves without error', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-idempotent',
+        name: 'Idempotent Test',
+        steps: [{ name: 'step', command: 'echo idemp' }],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-idemp-1'), pipeline);
+      run.markQueued();
+      run.start();
+      await pipelineRunRepo.save(run);
+
+      // Save again with same RUNNING status
+      await expect(pipelineRunRepo.save(run)).resolves.not.toThrow();
+
+      const loaded = await pipelineRunRepo.findById(run.id);
+      expect(loaded!.status).toBe('RUNNING');
     });
 
     it('lists pipeline runs by pipelineId', async () => {
@@ -226,6 +310,42 @@ describe('PostgreSQL Repositories Integration Tests', () => {
       expect(runs).toHaveLength(2);
       expect(runs.map((r) => r.id)).toContain('run-m-1');
       expect(runs.map((r) => r.id)).toContain('run-m-2');
+    });
+  });
+
+  describe('Domain Reconstruction Integrity', () => {
+    it('throws PersistenceError when rehydrating a pipeline with cyclic DAG from database', async () => {
+      // Directly insert malformed steps containing a cyclic dependency into PostgreSQL
+      const cyclicSteps = JSON.stringify([
+        { name: 'step-a', command: 'echo a', dependsOn: ['step-b'] },
+        { name: 'step-b', command: 'echo b', dependsOn: ['step-a'] },
+      ]);
+
+      await pool.query(
+        `INSERT INTO pipelines (id, name, steps, created_at, updated_at)
+         VALUES ('pipe-corrupt-cycle', 'Corrupt Cycle', $1::jsonb, NOW(), NOW());`,
+        [cyclicSteps],
+      );
+
+      await expect(pipelineRepo.findById(createPipelineId('pipe-corrupt-cycle'))).rejects.toThrow(
+        PersistenceError,
+      );
+    });
+
+    it('throws PersistenceError when rehydrating a pipeline with non-existent dependency', async () => {
+      const brokenSteps = JSON.stringify([
+        { name: 'step-a', command: 'echo a', dependsOn: ['non-existent-step'] },
+      ]);
+
+      await pool.query(
+        `INSERT INTO pipelines (id, name, steps, created_at, updated_at)
+         VALUES ('pipe-corrupt-dep', 'Corrupt Dep', $1::jsonb, NOW(), NOW());`,
+        [brokenSteps],
+      );
+
+      await expect(pipelineRepo.findById(createPipelineId('pipe-corrupt-dep'))).rejects.toThrow(
+        PersistenceError,
+      );
     });
   });
 
@@ -263,7 +383,7 @@ describe('PostgreSQL Repositories Integration Tests', () => {
       await expect(jobRepo.save(orphanJob)).rejects.toThrow(ConstraintViolationError);
     });
 
-    it('updates job status directly', async () => {
+    it('validates state transitions and rejects terminal state regression on jobs', async () => {
       const pipeline = new Pipeline({
         id: 'pipe-job-status',
         name: 'Job Status Pipeline',
@@ -275,10 +395,40 @@ describe('PostgreSQL Repositories Integration Tests', () => {
       await pipelineRunRepo.save(run);
 
       const job = run.getJobs()[0]!;
-      await jobRepo.updateStatus(job.id, 'RUNNING');
+      expect(job.status).toBe('PENDING');
 
-      const updated = await jobRepo.findById(job.id);
+      // Valid: PENDING -> QUEUED
+      job.markQueued();
+      await jobRepo.save(job);
+      let updated = await jobRepo.findById(job.id);
+      expect(updated!.status).toBe('QUEUED');
+
+      // Valid: QUEUED -> RUNNING
+      job.start();
+      await jobRepo.save(job);
+      updated = await jobRepo.findById(job.id);
       expect(updated!.status).toBe('RUNNING');
+
+      // Valid: RUNNING -> SUCCEEDED
+      job.succeed();
+      await jobRepo.save(job);
+      updated = await jobRepo.findById(job.id);
+      expect(updated!.status).toBe('SUCCEEDED');
+
+      // Terminal regression: attempt to save job as RUNNING
+      const regressedJob = new Job({
+        id: job.id,
+        pipelineRunId: run.id,
+        stepName: job.stepName,
+        command: job.command,
+        initialStatus: 'RUNNING',
+      });
+
+      await expect(jobRepo.save(regressedJob)).rejects.toThrow();
+
+      // Verify database state remains SUCCEEDED
+      const afterRegress = await jobRepo.findById(job.id);
+      expect(afterRegress!.status).toBe('SUCCEEDED');
     });
   });
 
@@ -361,6 +511,78 @@ describe('PostgreSQL Repositories Integration Tests', () => {
           [job.id],
         ),
       ).rejects.toThrow();
+    });
+
+    it('validates state transitions and rejects terminal state regression on job attempts', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-att-sm',
+        name: 'Attempt SM Pipeline',
+        steps: [{ name: 'step', command: 'echo step' }],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-att-sm'), pipeline);
+      await pipelineRunRepo.save(run);
+
+      const job = run.getJobs()[0]!;
+      const attempt = job.createAttempt();
+      await jobAttemptRepo.save(attempt);
+      expect(attempt.status).toBe('PENDING');
+
+      // Valid: PENDING -> RUNNING
+      attempt.start();
+      await jobAttemptRepo.save(attempt);
+      let loaded = await jobAttemptRepo.findById(attempt.id);
+      expect(loaded!.status).toBe('RUNNING');
+
+      // Valid: RUNNING -> SUCCEEDED
+      attempt.succeed(0);
+      await jobAttemptRepo.save(attempt);
+      loaded = await jobAttemptRepo.findById(attempt.id);
+      expect(loaded!.status).toBe('SUCCEEDED');
+
+      // Terminal regression: attempt to save attempt as RUNNING
+      const regressedAttempt = new JobAttempt({
+        id: attempt.id,
+        jobId: job.id,
+        attemptNumber: attempt.attemptNumber,
+        initialStatus: 'RUNNING',
+      });
+
+      await expect(jobAttemptRepo.save(regressedAttempt)).rejects.toThrow();
+
+      // Verify database state remains SUCCEEDED
+      const afterRegress = await jobAttemptRepo.findById(attempt.id);
+      expect(afterRegress!.status).toBe('SUCCEEDED');
+    });
+
+    it('rejects invalid state jumps on job attempts (PENDING -> SUCCEEDED)', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-att-jump',
+        name: 'Attempt Jump Pipeline',
+        steps: [{ name: 'step', command: 'echo step' }],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-att-jump'), pipeline);
+      await pipelineRunRepo.save(run);
+
+      const job = run.getJobs()[0]!;
+      const attempt = job.createAttempt();
+      await jobAttemptRepo.save(attempt);
+
+      // Attempt invalid jump: PENDING -> SUCCEEDED
+      const jumpedAttempt = new JobAttempt({
+        id: attempt.id,
+        jobId: job.id,
+        attemptNumber: attempt.attemptNumber,
+        initialStatus: 'SUCCEEDED',
+      });
+
+      await expect(jobAttemptRepo.save(jumpedAttempt)).rejects.toThrow();
+
+      const afterAttempt = await jobAttemptRepo.findById(attempt.id);
+      expect(afterAttempt!.status).toBe('PENDING');
     });
   });
 });
