@@ -4,6 +4,7 @@
     { "path": "packages/contracts" },
     { "path": "packages/config" },
     { "path": "packages/logging" },
+    { "path": "packages/pipeline" },
     { "path": "apps/api" },
     { "path": "apps/scheduler" },
     { "path": "apps/worker" },
