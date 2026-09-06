@@ -30,6 +30,7 @@ const configSchema = z.object({
         .max(65535, 'API_PORT cannot exceed 65535'),
     ),
   DATABASE_URL: z.string().default('postgresql://forge:forge@127.0.0.1:5432/forge'),
+  REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
 });
 
 export type RawConfigInput = Record<string, string | undefined>;
@@ -54,12 +55,13 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     );
   }
 
-  const { NODE_ENV, LOG_LEVEL, API_PORT, DATABASE_URL } = result.data;
+  const { NODE_ENV, LOG_LEVEL, API_PORT, DATABASE_URL, REDIS_URL } = result.data;
 
   return {
     nodeEnv: NODE_ENV as NodeEnvironment,
     logLevel: LOG_LEVEL as LogLevel,
     apiPort: API_PORT,
     databaseUrl: DATABASE_URL,
+    redisUrl: REDIS_URL,
   };
 }

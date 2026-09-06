@@ -50,4 +50,5 @@ export interface AppConfig {
   logLevel: LogLevel;
   apiPort: number;
   databaseUrl: string;
+  redisUrl: string;
 }
