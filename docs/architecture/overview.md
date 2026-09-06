@@ -23,57 +23,44 @@ Forge V2 is designed as a distributed system composed of:
 
 ---
 
-## 3. Current Implementation Status (PR 01)
+## 3. Current Implementation Status
 
-This repository currently contains **PR 01: Repository Foundation & Architecture Contract**.
-
-In accordance with strict architectural discipline, PR 01 introduces **only the structural foundation and architectural contracts**:
-
-### Implemented in PR 01
-
-- **Monorepo Workspace**: NPM workspaces partitioning `apps/*` and `packages/*`.
-- **Type System**: Strict TypeScript project references and shared base compiler options (`strict: true`).
-- **Shared Packages**:
-  - `@forge/contracts`: Boundary type contracts (`HealthResponse`, `ServiceName`, `LogEntry`, `AppConfig`).
-  - `@forge/config`: Strongly typed runtime environment validation using Zod.
-  - `@forge/logging`: Structured logging library supporting human-readable dev output and machine-readable JSON in production.
-- **Minimal Application Shells**:
-  - `apps/api`: Express shell exposing deterministic `GET /health`.
-  - `apps/scheduler`: Executable Node service shell logging startup lifecycle.
-  - `apps/worker`: Executable Node service shell logging startup lifecycle.
-  - `apps/cli`: CLI shell supporting `--help` and `--version`.
-  - `apps/web`: Next.js shell with responsive architectural dashboard.
-- **Testing Foundation**: Vitest test runner with automated test suites for configuration validation, logging, and API health checks.
-- **Linting & Formatting**: Repository-wide ESLint 9 flat config and Prettier rules.
-
-### Planned for Future PRs (Out of Scope in PR 01)
-
-- Database models, migrations, and PostgreSQL connection pooling.
-- Redis queues, pub/sub, distributed locks, and state synchronization.
-- DAG pipeline definition, dependency resolution, and execution scheduling.
-- Docker / Kubernetes container sandboxing and task execution.
-- Real-time WebSocket log streaming.
-- Authentication, authorization, and secret isolation.
-- CLI execution commands (`forge run`, `forge logs`, `forge deploy`).
+- **PR 01: Repository Foundation & Architecture Contract (Completed)**: Monorepo workspaces, strict TypeScript configuration, service shells, shared packages (`@forge/contracts`, `@forge/config`, `@forge/logging`), baseline testing, and linting.
+- **PR 02: Architecture Decision Records & Engineering Contracts (Current)**: Formal architectural decision records (`ADR-001` through `ADR-005`), architectural glossary, and invariants catalog.
 
 ---
 
-## 4. Intended Evolution Path
+## 4. Architecture Decisions & Contracts
+
+- **[ADR-001: Explicit Service and Package Boundaries](decisions/ADR-001-service-boundaries.md)**
+- **[ADR-002: PostgreSQL as Authoritative Source of Truth](decisions/ADR-002-postgresql-source-of-truth.md)**
+- **[ADR-003: Redis for Transient Distributed Coordination](decisions/ADR-003-redis-coordination.md)**
+- **[ADR-004: At-Least-Once Delivery and Idempotent State Transitions](decisions/ADR-004-at-least-once-delivery.md)**
+- **[ADR-005: Ephemeral Execution Environments](decisions/ADR-005-ephemeral-execution.md)**
+- **[Architecture Glossary](glossary.md)**
+- **[Architectural Invariants Catalog](invariants.md)**
+- **[Service Boundaries Specification](boundaries.md)**
+
+---
+
+## 5. Intended Evolution Path
 
 ```
-PR 01: Repository Foundation & Architecture Contract (Current)
+PR 01: Repository Foundation & Architecture Contract (Completed)
   │
-  ├──► PR 02: Core Domain Model & Database Schema (PostgreSQL migrations)
+  ├──► PR 02: Architecture Decision Records & Engineering Contracts (Current)
   │
-  ├──► PR 03: Queue Architecture & Redis State Coordination
+  ├──► PR 03: Core Domain Model & Database Schema (PostgreSQL migrations)
   │
-  ├──► PR 04: Scheduler Engine & DAG Execution Graphs
+  ├──► PR 04: Queue Architecture & Redis State Coordination
   │
-  ├──► PR 05: Worker Runtime & Container Executor (Docker/K8s)
+  ├──► PR 05: Scheduler Engine & DAG Execution Graphs
   │
-  ├──► PR 06: API Ingress, Auth & Webhook Processing
+  ├──► PR 06: Worker Runtime & Container Executor (Docker/K8s)
   │
-  ├──► PR 07: Real-Time Streaming & WebSocket Monitoring
+  ├──► PR 07: API Ingress, Auth & Webhook Processing
   │
-  └──► PR 08: CLI Workflows & Production Observability
+  ├──► PR 08: Real-Time Streaming & WebSocket Monitoring
+  │
+  └──► PR 09: CLI Workflows & Production Observability
 ```

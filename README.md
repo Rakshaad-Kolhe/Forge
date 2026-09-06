@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 01: Repository Foundation & Architecture Contract**.
+This repository is currently at **PR 02: Architecture Decision Records & Engineering Contracts**.
 
 ---
 
@@ -24,7 +24,7 @@ This repository is currently at **PR 01: Repository Foundation & Architecture Co
   - `apps/web`: Next.js landing page displaying architectural boundaries.
 - **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, and API health.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
-- **Documentation**: Architecture overview and service boundary contracts in `docs/architecture/`.
+- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, and invariants catalog in `docs/architecture/`.
 
 ### Planned (Future PRs)
 
@@ -55,7 +55,12 @@ forge/
 │   ├── config/         # Environment variable validation & typed config
 │   └── logging/        # Structured logging abstraction
 ├── docs/
-│   └── architecture/   # Architecture overview and boundary definitions
+│   └── architecture/
+│       ├── decisions/  # Architecture Decision Records (ADR-001 - ADR-005)
+│       ├── glossary.md # Architectural domain glossary
+│       ├── invariants.md # Non-negotiable architectural rules
+│       ├── overview.md # System overview and roadmap
+│       └── boundaries.md # Service boundaries and allowed roles
 ├── .env.example        # Foundational environment variable template
 ├── tsconfig.base.json  # Shared strict TypeScript configuration
 ├── package.json        # Workspace configuration and root scripts
@@ -151,5 +156,17 @@ npm run build -w apps/web
 
 ## Architecture Documentation
 
+### Core Contracts & Specifications
+
 - [Architecture Overview](docs/architecture/overview.md)
 - [Service Boundaries & Ownership Contract](docs/architecture/boundaries.md)
+- [Architecture Glossary](docs/architecture/glossary.md)
+- [Architectural Invariants Catalog](docs/architecture/invariants.md)
+
+### Architecture Decision Records (ADRs)
+
+- [ADR-001: Explicit Service and Package Boundaries](docs/architecture/decisions/ADR-001-service-boundaries.md)
+- [ADR-002: PostgreSQL as Authoritative Source of Truth](docs/architecture/decisions/ADR-002-postgresql-source-of-truth.md)
+- [ADR-003: Redis for Transient Distributed Coordination](docs/architecture/decisions/ADR-003-redis-coordination.md)
+- [ADR-004: At-Least-Once Delivery and Idempotent State Transitions](docs/architecture/decisions/ADR-004-at-least-once-delivery.md)
+- [ADR-005: Ephemeral Execution Environments](docs/architecture/decisions/ADR-005-ephemeral-execution.md)
