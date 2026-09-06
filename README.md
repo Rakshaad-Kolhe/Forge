@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 06: Redis Coordination Foundation**.
+This repository is currently at **PR 07: Reliable FIFO Job Queue**.
 
 ---
 
@@ -19,20 +19,22 @@ This repository is currently at **PR 06: Redis Coordination Foundation**.
   - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines).
   - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, and atomic aggregate persistence).
   - `@forge/redis`: Redis coordination foundation (Connection management, health checks, low-level generic primitives, TTL, atomic operations, and real Redis integration tests).
+  - `@forge/queue`: Redis-backed reliable FIFO job queue (At-least-once delivery, explicit acknowledgement, queue depth, in-flight visibility tracking, crash/unacknowledged recovery, and competing consumer coordination).
 - **Minimal Service Shells**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
   - `apps/scheduler`: Process shell with structured startup/shutdown lifecycle.
   - `apps/worker`: Process shell with structured startup/shutdown lifecycle.
   - `apps/cli`: CLI executable supporting `--help` and `--version`.
   - `apps/web`: Next.js landing page displaying architectural boundaries.
-- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, PostgreSQL persistence, and Redis coordination.
+- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, PostgreSQL persistence, Redis coordination, and FIFO job queue.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
-- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, and invariants catalog in `docs/architecture/`.
+- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, and queue architecture spec in `docs/architecture/`.
 
 ### Planned (Future PRs)
 
-- Redis-based job queues, distributed locks, and state synchronization
-- DAG pipeline scheduler and execution graph resolver
+- Scheduler service (`apps/scheduler`) and DAG execution graph resolution
+- Worker task claiming and heartbeat ownership leases
+- Priority scheduling and weighted fairness policies
 - Container executors (Docker daemon and Kubernetes job runners)
 - Real-time WebSocket streaming for live logs and job statuses
 - Authentication, API keys, and role-based access control
@@ -58,7 +60,8 @@ forge/
 │   ├── logging/        # Structured logging abstraction
 │   ├── pipeline/       # Core pipeline domain model, DAG, state machines
 │   ├── database/       # PostgreSQL connection, migrations, repositories
-│   └── redis/          # Redis connection, health checks, coordination primitives
+│   ├── redis/          # Redis connection, health checks, coordination primitives
+│   └── queue/          # Redis-backed FIFO job queue and recovery primitives
 ├── docs/
 │   └── architecture/
 │       ├── decisions/  # Architecture Decision Records (ADR-001 - ADR-005)
@@ -172,6 +175,7 @@ npm run build -w apps/web
 - [PostgreSQL Persistence Specification](docs/architecture/database.md)
 - [Transactional Domain Persistence & State Integrity](docs/architecture/persistence-integrity.md)
 - [Redis Coordination Foundation](docs/architecture/redis.md)
+- [Reliable FIFO Job Queue](docs/architecture/queue.md)
 - [Architecture Glossary](docs/architecture/glossary.md)
 - [Architectural Invariants Catalog](docs/architecture/invariants.md)
 
