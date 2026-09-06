@@ -49,4 +49,5 @@ export interface AppConfig {
   nodeEnv: NodeEnvironment;
   logLevel: LogLevel;
   apiPort: number;
+  databaseUrl: string;
 }

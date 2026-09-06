@@ -138,6 +138,16 @@ PostgreSQL does **not** store live queue operations, raw real-time WebSocket pay
 - No database client, driver, or ORM dependency is added in PR 02.
 - Domain interfaces in future PRs must specify repository contracts (e.g., `interface JobRepository`) before introducing concrete PostgreSQL implementations.
 
+### PR 04 Implementation Note (PostgreSQL Persistence Foundation)
+
+PR 04 implements the durable persistence foundation defined in this ADR:
+
+- Added `@forge/database` package providing managed connection pooling (`pg.Pool`) and database health checks (`SELECT 1`).
+- Implemented versioned migration system (`001_initial_schema`) tracking executed migrations in `forge_migrations`.
+- Created durable tables with relational constraints: `pipelines`, `pipeline_runs`, `jobs`, and `job_attempts`.
+- Defined and implemented repository contracts (`PipelineRepository`, `PipelineRunRepository`, `JobRepository`, `JobAttemptRepository`) with domain model reconstruction and transactional boundary support (`withTransaction`).
+- Verified zero direct database dependencies in `@forge/pipeline`, preserving pure domain isolation.
+
 ---
 
 ## Validation

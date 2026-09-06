@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 03: Pipeline Domain Model & State Machines**.
+This repository is currently at **PR 04: PostgreSQL Persistence Foundation**.
 
 ---
 
@@ -17,19 +17,19 @@ This repository is currently at **PR 03: Pipeline Domain Model & State Machines*
   - `@forge/config`: Strongly typed runtime environment validation using Zod.
   - `@forge/logging`: Structured logger (human-readable in development, newline-delimited JSON in production).
   - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines).
+  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, and transactions).
 - **Minimal Service Shells**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
   - `apps/scheduler`: Process shell with structured startup/shutdown lifecycle.
   - `apps/worker`: Process shell with structured startup/shutdown lifecycle.
   - `apps/cli`: CLI executable supporting `--help` and `--version`.
   - `apps/web`: Next.js landing page displaying architectural boundaries.
-- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, and pipeline domain core.
+- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, and PostgreSQL persistence.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
 - **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, and invariants catalog in `docs/architecture/`.
 
 ### Planned (Future PRs)
 
-- PostgreSQL persistence, migrations, and repository layer
 - Redis-based job queues, distributed locks, and state synchronization
 - DAG pipeline scheduler and execution graph resolver
 - Container executors (Docker daemon and Kubernetes job runners)
@@ -55,10 +55,12 @@ forge/
 │   ├── contracts/      # Shared type definitions and interfaces
 │   ├── config/         # Environment variable validation & typed config
 │   ├── logging/        # Structured logging abstraction
-│   └── pipeline/       # Core pipeline domain model, DAG, state machines
+│   ├── pipeline/       # Core pipeline domain model, DAG, state machines
+│   └── database/       # PostgreSQL connection, migrations, repositories
 ├── docs/
 │   └── architecture/
 │       ├── decisions/  # Architecture Decision Records (ADR-001 - ADR-005)
+│       ├── database.md # PostgreSQL persistence architecture
 │       ├── domain-model.md # Domain model & state machines specification
 │       ├── glossary.md # Architectural domain glossary
 │       ├── invariants.md # Non-negotiable architectural rules
@@ -164,6 +166,7 @@ npm run build -w apps/web
 - [Architecture Overview](docs/architecture/overview.md)
 - [Service Boundaries & Ownership Contract](docs/architecture/boundaries.md)
 - [Pipeline Domain Model Specification](docs/architecture/domain-model.md)
+- [PostgreSQL Persistence Specification](docs/architecture/database.md)
 - [Architecture Glossary](docs/architecture/glossary.md)
 - [Architectural Invariants Catalog](docs/architecture/invariants.md)
 
