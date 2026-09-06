@@ -15,6 +15,7 @@ export interface JobOptions {
   command: string;
   dependsOn?: readonly string[];
   initialStatus?: JobStatus;
+  attempts?: readonly JobAttempt[];
 }
 
 /**
@@ -36,6 +37,9 @@ export class Job {
     this.command = options.command;
     this.dependsOn = Object.freeze([...(options.dependsOn ?? [])]);
     this.stateMachine = createJobStateMachine(options.id, options.initialStatus ?? 'PENDING');
+    if (options.attempts) {
+      this.attemptsList.push(...options.attempts);
+    }
   }
 
   public get status(): JobStatus {

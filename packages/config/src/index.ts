@@ -29,6 +29,7 @@ const configSchema = z.object({
         .min(1, 'API_PORT must be at least 1')
         .max(65535, 'API_PORT cannot exceed 65535'),
     ),
+  DATABASE_URL: z.string().default('postgresql://forge:forge@127.0.0.1:5432/forge'),
 });
 
 export type RawConfigInput = Record<string, string | undefined>;
@@ -53,11 +54,12 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     );
   }
 
-  const { NODE_ENV, LOG_LEVEL, API_PORT } = result.data;
+  const { NODE_ENV, LOG_LEVEL, API_PORT, DATABASE_URL } = result.data;
 
   return {
     nodeEnv: NODE_ENV as NodeEnvironment,
     logLevel: LOG_LEVEL as LogLevel,
     apiPort: API_PORT,
+    databaseUrl: DATABASE_URL,
   };
 }

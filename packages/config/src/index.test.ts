@@ -8,6 +8,7 @@ describe('loadConfig', () => {
       nodeEnv: 'development',
       logLevel: 'info',
       apiPort: 3000,
+      databaseUrl: 'postgresql://forge:forge@127.0.0.1:5432/forge',
     });
   });
 
@@ -16,11 +17,13 @@ describe('loadConfig', () => {
       NODE_ENV: 'production',
       LOG_LEVEL: 'warn',
       API_PORT: '8080',
+      DATABASE_URL: 'postgresql://custom:custom@localhost:5433/custom_db',
     });
     expect(config).toEqual({
       nodeEnv: 'production',
       logLevel: 'warn',
       apiPort: 8080,
+      databaseUrl: 'postgresql://custom:custom@localhost:5433/custom_db',
     });
   });
 
