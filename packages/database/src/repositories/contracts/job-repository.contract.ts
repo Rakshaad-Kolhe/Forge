@@ -1,4 +1,4 @@
-import type { Job, JobId, JobStatus, PipelineRunId } from '@forge/pipeline';
+import type { Job, JobId, PipelineRunId } from '@forge/pipeline';
 
 /**
  * Repository interface for Job aggregates.
@@ -6,6 +6,7 @@ import type { Job, JobId, JobStatus, PipelineRunId } from '@forge/pipeline';
 export interface JobRepository {
   /**
    * Persists a new job or updates an existing one.
+   * Enforces domain state machine transition rules and terminal state immutability.
    * If the job contains attempts, persists them as well.
    */
   save(job: Job): Promise<void>;
@@ -19,9 +20,4 @@ export interface JobRepository {
    * Finds all jobs for a given pipeline run ordered by creation.
    */
   findByPipelineRunId(pipelineRunId: PipelineRunId): Promise<Job[]>;
-
-  /**
-   * Updates only the status of a job.
-   */
-  updateStatus(id: JobId, status: JobStatus): Promise<void>;
 }

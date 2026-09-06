@@ -1,4 +1,4 @@
-import { createPipelineId, createPipelineRunId, Pipeline, PipelineRun } from '@forge/pipeline';
+import { createPipelineId, createPipelineRunId, Job, Pipeline, PipelineRun } from '@forge/pipeline';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabasePool } from './client.js';
 import { DEFAULT_DATABASE_URL } from './config.js';
@@ -102,5 +102,141 @@ describe('PostgreSQL Transactions & Rollback Verification', () => {
 
     const checkJobs = await pool.query('SELECT id FROM jobs WHERE pipeline_run_id = $1;', [runId]);
     expect(checkJobs.rows).toHaveLength(0);
+  });
+
+  it('isolates uncommitted writes so they are invisible to external pool connections until commit', async () => {
+    const pipelineId = createPipelineId('tx-pipe-isolation');
+
+    const pipeline = new Pipeline({
+      id: pipelineId,
+      name: 'Isolation Test Pipeline',
+      steps: [{ name: 'step-iso', command: 'echo iso' }],
+    });
+
+    await withTransaction(pool, async (tx) => {
+      await tx.pipelines.save(pipeline);
+
+      // Visible within transaction
+      const inTxCheck = await tx.client.query('SELECT id FROM pipelines WHERE id = $1;', [
+        pipelineId,
+      ]);
+      expect(inTxCheck.rows).toHaveLength(1);
+
+      // Invisible outside transaction via independent pool connection
+      const outsideCheck = await pool.query('SELECT id FROM pipelines WHERE id = $1;', [
+        pipelineId,
+      ]);
+      expect(outsideCheck.rows).toHaveLength(0);
+    });
+
+    // Visible outside transaction after commit
+    const afterCommitCheck = await pool.query('SELECT id FROM pipelines WHERE id = $1;', [
+      pipelineId,
+    ]);
+    expect(afterCommitCheck.rows).toHaveLength(1);
+  });
+
+  it('enforces atomic aggregate rollback when constituent job persistence fails', async () => {
+    const pipelineId = createPipelineId('tx-pipe-aggregate');
+    const runId = createPipelineRunId('tx-run-aggregate');
+
+    const pipeline = new Pipeline({
+      id: pipelineId,
+      name: 'Aggregate Test Pipeline',
+      steps: [
+        { name: 'step-1', command: 'echo 1' },
+        { name: 'step-2', command: 'echo 2', dependsOn: ['step-1'] },
+      ],
+    });
+
+    await withTransaction(pool, async (tx) => {
+      await tx.pipelines.save(pipeline);
+    });
+
+    const run = PipelineRun.create(runId, pipeline);
+
+    // Initial save of the run with jobs as PENDING
+    await withTransaction(pool, async (tx) => {
+      await tx.pipelineRuns.save(run);
+    });
+
+    const job2 = run.getJob('step-2')!;
+    // Advance job2 in DB through valid lifecycle: PENDING -> QUEUED -> RUNNING -> SUCCEEDED
+    job2.markQueued();
+    await withTransaction(pool, async (tx) => {
+      await tx.jobs.save(job2);
+    });
+    job2.start();
+    await withTransaction(pool, async (tx) => {
+      await tx.jobs.save(job2);
+    });
+    job2.succeed();
+    await withTransaction(pool, async (tx) => {
+      await tx.jobs.save(job2);
+    });
+
+    const checkJob2 = await pool.query<{ status: string }>(
+      'SELECT status FROM jobs WHERE id = $1;',
+      [job2.id],
+    );
+    expect(checkJob2.rows[0]?.status).toBe('SUCCEEDED');
+
+    // Create a mutated run aggregate:
+    // job1 attempts to advance PENDING -> QUEUED (valid)
+    // job2 attempts illegal regression SUCCEEDED -> RUNNING (invalid terminal transition)
+    const mutatedRun = new PipelineRun({
+      id: run.id,
+      pipelineId: pipeline.id,
+      pipelineName: pipeline.name,
+      initialStatus: 'RUNNING',
+    });
+
+    const job1Mutated = new Job({
+      id: run.getJob('step-1')!.id,
+      pipelineRunId: run.id,
+      stepName: 'step-1',
+      command: 'echo 1',
+      initialStatus: 'QUEUED',
+    });
+
+    const job2Regressed = new Job({
+      id: job2.id,
+      pipelineRunId: run.id,
+      stepName: 'step-2',
+      command: 'echo 2',
+      dependsOn: ['step-1'],
+      initialStatus: 'RUNNING', // Illegal: DB is SUCCEEDED
+    });
+
+    mutatedRun.addJob(job1Mutated);
+    mutatedRun.addJob(job2Regressed);
+
+    // Saving mutatedRun must fail and roll back everything atomically
+    await expect(
+      withTransaction(pool, async (tx) => {
+        await tx.pipelineRuns.save(mutatedRun);
+      }),
+    ).rejects.toThrow();
+
+    // Verify rollback: run status was NOT updated to RUNNING
+    const checkRunAfter = await pool.query<{ status: string }>(
+      'SELECT status FROM pipeline_runs WHERE id = $1;',
+      [runId],
+    );
+    expect(checkRunAfter.rows[0]?.status).toBe('PENDING');
+
+    // Verify rollback: job1 was NOT updated to QUEUED
+    const checkJob1After = await pool.query<{ status: string }>(
+      'SELECT status FROM jobs WHERE id = $1;',
+      [job1Mutated.id],
+    );
+    expect(checkJob1After.rows[0]?.status).toBe('PENDING');
+
+    // Verify job2 remains SUCCEEDED
+    const checkJob2After = await pool.query<{ status: string }>(
+      'SELECT status FROM jobs WHERE id = $1;',
+      [job2.id],
+    );
+    expect(checkJob2After.rows[0]?.status).toBe('SUCCEEDED');
   });
 });

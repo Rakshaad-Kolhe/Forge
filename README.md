@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 04: PostgreSQL Persistence Foundation**.
+This repository is currently at **PR 05: Transactional Domain Persistence & State Integrity**.
 
 ---
 
@@ -17,7 +17,7 @@ This repository is currently at **PR 04: PostgreSQL Persistence Foundation**.
   - `@forge/config`: Strongly typed runtime environment validation using Zod.
   - `@forge/logging`: Structured logger (human-readable in development, newline-delimited JSON in production).
   - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines).
-  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, and transactions).
+  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, and atomic aggregate persistence).
 - **Minimal Service Shells**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
   - `apps/scheduler`: Process shell with structured startup/shutdown lifecycle.
@@ -167,6 +167,7 @@ npm run build -w apps/web
 - [Service Boundaries & Ownership Contract](docs/architecture/boundaries.md)
 - [Pipeline Domain Model Specification](docs/architecture/domain-model.md)
 - [PostgreSQL Persistence Specification](docs/architecture/database.md)
+- [Transactional Domain Persistence & State Integrity](docs/architecture/persistence-integrity.md)
 - [Architecture Glossary](docs/architecture/glossary.md)
 - [Architectural Invariants Catalog](docs/architecture/invariants.md)
 

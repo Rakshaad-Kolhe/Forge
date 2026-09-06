@@ -1,4 +1,4 @@
-import type { PipelineId, PipelineRun, PipelineRunId, PipelineRunStatus } from '@forge/pipeline';
+import type { PipelineId, PipelineRun, PipelineRunId } from '@forge/pipeline';
 
 /**
  * Repository interface for PipelineRun aggregates.
@@ -6,6 +6,7 @@ import type { PipelineId, PipelineRun, PipelineRunId, PipelineRunStatus } from '
 export interface PipelineRunRepository {
   /**
    * Persists a pipeline run and its constituent jobs and attempts.
+   * Enforces domain state machine transition rules and terminal state immutability.
    */
   save(run: PipelineRun): Promise<void>;
 
@@ -18,9 +19,4 @@ export interface PipelineRunRepository {
    * Lists pipeline runs associated with a specific pipeline ID.
    */
   findByPipelineId(pipelineId: PipelineId): Promise<PipelineRun[]>;
-
-  /**
-   * Updates the lifecycle status and completion timestamp of a pipeline run.
-   */
-  updateStatus(id: PipelineRunId, status: PipelineRunStatus, finishedAt?: string): Promise<void>;
 }
