@@ -35,6 +35,7 @@ Forge V2 is designed as a distributed system composed of:
 - **PR 08: Worker Registration & Heartbeat (Completed)**: Distributed worker registration, durable metadata in PostgreSQL, transient liveness in Redis (`@forge/worker-registry`), crash/stale detection, and graceful lifecycle management.
 - **PR 09: Worker Capability & Resource Matching (Completed)**: Pure, deterministic placement eligibility layer (`matchesWorker`, `filterEligibleWorkers`), job execution requirements, explainable failure diagnostics, and PostgreSQL persistence.
 - **PR 10: Scheduler Foundation & Deterministic Worker Selection (Completed)**: First-class scheduler service (`@forge/scheduler`), operational eligibility (`READY + ALIVE`), deterministic baseline worker selection policy (`DeterministicFirstEligible`), explainable placement decisions, and unacknowledged queue recoverability.
+- **PR 11: Priority Scheduling & Deterministic Job Ordering (Completed)**: Bounded job priority model `[-1000, 1000]`, PostgreSQL persistence with CHECK constraint, `HighestPriorityFirstPolicy` with canonical alphanumeric tie-breaking, non-blocking unschedulable semantics, prioritized batch evaluation, and FIFO queue decoupling.
 
 ---
 
@@ -82,7 +83,7 @@ PR 01: Repository Foundation & Architecture Contract (Completed)
   │
   ├──► PR 10: Scheduler Foundation & Deterministic Worker Selection (Completed)
   │
-  ├──► PR 11: Priority Scheduling & Policy Layer (Planned)
+  ├──► PR 11: Priority Scheduling & Deterministic Job Ordering (Completed)
   │
   └──► PR 12: Distributed Lease Allocation & Job Claiming (Planned)
 ```

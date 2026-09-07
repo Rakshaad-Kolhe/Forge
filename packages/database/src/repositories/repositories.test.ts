@@ -481,6 +481,93 @@ describe('PostgreSQL Repositories Integration Tests', () => {
         gpuCount: 2,
       });
     });
+
+    it('persists and reconstructs job priority accurately', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-job-priority',
+        name: 'Job Priority Pipeline',
+        steps: [
+          {
+            name: 'high-prio',
+            command: 'echo high',
+            priority: 100,
+          },
+          {
+            name: 'low-prio',
+            command: 'echo low',
+            priority: -50,
+          },
+          {
+            name: 'default-prio',
+            command: 'echo default',
+          },
+        ],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-job-priority-1'), pipeline);
+      await pipelineRunRepo.save(run);
+
+      const jobs = run.getJobs();
+      expect(jobs[0]!.priority).toBe(100);
+      expect(jobs[1]!.priority).toBe(-50);
+      expect(jobs[2]!.priority).toBe(0);
+
+      // Verify findById for each
+      const loadedHigh = await jobRepo.findById(jobs[0]!.id);
+      expect(loadedHigh).not.toBeNull();
+      expect(loadedHigh!.priority).toBe(100);
+
+      const loadedLow = await jobRepo.findById(jobs[1]!.id);
+      expect(loadedLow).not.toBeNull();
+      expect(loadedLow!.priority).toBe(-50);
+
+      const loadedDefault = await jobRepo.findById(jobs[2]!.id);
+      expect(loadedDefault).not.toBeNull();
+      expect(loadedDefault!.priority).toBe(0);
+
+      // Verify findByPipelineRunId
+      const loadedJobs = await jobRepo.findByPipelineRunId(run.id);
+      expect(loadedJobs).toHaveLength(3);
+      const prioMap = new Map(loadedJobs.map((j) => [j.stepName, j.priority]));
+      expect(prioMap.get('high-prio')).toBe(100);
+      expect(prioMap.get('low-prio')).toBe(-50);
+      expect(prioMap.get('default-prio')).toBe(0);
+
+      // Verify update preserves/modifies priority
+      const updatedJob = new Job({
+        id: jobs[0]!.id,
+        pipelineRunId: run.id,
+        stepName: 'high-prio',
+        command: 'echo high',
+        priority: 250,
+        initialStatus: 'PENDING',
+      });
+      await jobRepo.save(updatedJob);
+      const reloadedHigh = await jobRepo.findById(jobs[0]!.id);
+      expect(reloadedHigh!.priority).toBe(250);
+    });
+
+    it('enforces priority database check constraint [-1000, 1000]', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-job-chk',
+        name: 'Priority Check Pipeline',
+        steps: [{ name: 'task', command: 'echo task' }],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-job-chk'), pipeline);
+      await pipelineRunRepo.save(run);
+
+      // Direct SQL insertion to bypass domain validation and verify Postgres CHECK constraint
+      await expect(
+        pool.query(
+          `INSERT INTO jobs (id, pipeline_run_id, step_name, command, depends_on, priority, status, created_at)
+           VALUES ('job-invalid-prio', $1, 'task-chk', 'echo 1', '[]'::jsonb, 1500, 'PENDING', NOW())`,
+          [run.id],
+        ),
+      ).rejects.toThrow();
+    });
   });
 
   describe('PgJobAttemptRepository', () => {

@@ -330,4 +330,105 @@ describe('Real PostgreSQL, Redis & Queue Scheduler Integration Tests', () => {
       expect(decision.eligibleWorkerCount).toBe(0);
     }
   });
+
+  it('schedules dequeued batch in priority order with non-blocking unschedulable semantics across real Postgres, Redis, and FIFO Queue', async () => {
+    // 1. Register a real worker in Redis & Postgres
+    await workerRegistry.register({
+      workerId: 'worker-general',
+      capabilities: { executors: ['docker'] },
+      resources: { cpuCores: 4, memoryBytes: 8192 },
+    });
+
+    // 2. Create pipeline and pipeline run
+    const pipeId = createPipelineId('pipe-priority-batch');
+    await pipelineRepo.save(
+      new Pipeline({
+        id: pipeId,
+        name: 'Priority Batch Pipeline',
+        steps: [{ name: 'placeholder', command: 'echo 1' }],
+      }),
+    );
+
+    const runId = createPipelineRunId('run-priority-batch');
+    await pipelineRunRepo.save(
+      new PipelineRun({ id: runId, pipelineId: pipeId, pipelineName: 'Priority Batch Pipeline' }),
+    );
+
+    // 3. Persist 3 jobs with distinct priorities into Postgres:
+    //    job-low: priority -10 (eligible)
+    //    job-high-unsched: priority 800 (unsatisfiable 32 CPU)
+    //    job-med: priority 50 (eligible)
+    const jobLow = new Job({
+      id: createJobId('job-batch-low'),
+      pipelineRunId: runId,
+      stepName: 'low-step',
+      command: 'echo low',
+      priority: -10,
+      requirements: { executor: 'docker', cpuCores: 2 },
+    });
+    const jobHighUnsched = new Job({
+      id: createJobId('job-batch-high-unsched'),
+      pipelineRunId: runId,
+      stepName: 'huge-step',
+      command: 'echo huge',
+      priority: 800,
+      requirements: { executor: 'docker', cpuCores: 32 },
+    });
+    const jobMed = new Job({
+      id: createJobId('job-batch-med'),
+      pipelineRunId: runId,
+      stepName: 'med-step',
+      command: 'echo med',
+      priority: 50,
+      requirements: { executor: 'docker', cpuCores: 2 },
+    });
+
+    await jobRepo.save(jobLow);
+    await jobRepo.save(jobHighUnsched);
+    await jobRepo.save(jobMed);
+
+    // 4. Enqueue into FIFO queue in arbitrary order: low, high, med
+    await queue.enqueue({ jobId: jobLow.id, pipelineRunId: runId, stepName: jobLow.stepName });
+    await queue.enqueue({
+      jobId: jobHighUnsched.id,
+      pipelineRunId: runId,
+      stepName: jobHighUnsched.stepName,
+    });
+    await queue.enqueue({ jobId: jobMed.id, pipelineRunId: runId, stepName: jobMed.stepName });
+
+    // 5. Schedule batch of 3 via ForgeScheduler
+    const batchResult = await scheduler.scheduleNextBatch(queue, 3);
+
+    expect(batchResult.deliveries).toHaveLength(3);
+    const { result } = batchResult;
+
+    // Evaluation sequence MUST be strictly priority descending: 800 -> 50 -> -10
+    expect(result.orderedDecisions).toHaveLength(3);
+    expect(result.orderedDecisions[0]?.jobId).toBe(jobHighUnsched.id);
+    expect(result.orderedDecisions[0]?.priority).toBe(800);
+    expect(result.orderedDecisions[0]?.status).toBe('UNSCHEDULABLE');
+
+    // Non-blocking: jobMed and jobLow are scheduled despite jobHighUnsched being unschedulable
+    expect(result.orderedDecisions[1]?.jobId).toBe(jobMed.id);
+    expect(result.orderedDecisions[1]?.priority).toBe(50);
+    expect(result.orderedDecisions[1]?.status).toBe('SCHEDULED');
+    if (result.orderedDecisions[1]?.status === 'SCHEDULED') {
+      expect(result.orderedDecisions[1].workerId).toBe('worker-general');
+    }
+
+    expect(result.orderedDecisions[2]?.jobId).toBe(jobLow.id);
+    expect(result.orderedDecisions[2]?.priority).toBe(-10);
+    expect(result.orderedDecisions[2]?.status).toBe('SCHEDULED');
+    if (result.orderedDecisions[2]?.status === 'SCHEDULED') {
+      expect(result.orderedDecisions[2].workerId).toBe('worker-general');
+    }
+
+    expect(result.scheduledDecisions).toHaveLength(2);
+    expect(result.unschedulableDecisions).toHaveLength(1);
+
+    // Verify messages remain unacknowledged and recoverable under visibility timeout
+    // Immediate second dequeue without visibility expiry should return null
+    const immediateNext = await queue.dequeue();
+    expect(immediateNext).toBeNull();
+  });
 });

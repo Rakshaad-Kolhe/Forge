@@ -67,6 +67,7 @@ export class PipelineRun {
         command: step.command,
         dependsOn: step.dependsOn,
         requirements: step.requirements,
+        priority: step.priority,
       });
 
       run.addJob(job);

@@ -20,6 +20,46 @@ export type {
 };
 
 /**
+ * Pluggable job ordering policy interface.
+ * Given a collection of jobs, orders them according to priority and scheduling policy rules.
+ */
+export interface JobOrderingPolicy {
+  /**
+   * Unique descriptive name of the policy.
+   */
+  readonly name: string;
+
+  /**
+   * Orders candidate jobs according to policy rules.
+   */
+  orderJobs<
+    T extends { readonly priority?: number; readonly id?: string; readonly jobId?: string },
+  >(
+    jobs: readonly T[],
+  ): T[];
+}
+
+/**
+ * Aggregated result of evaluating placement for a prioritized batch of jobs.
+ */
+export interface PrioritizedScheduleResult {
+  /**
+   * All decisions ordered matching the evaluation sequence (highest priority first).
+   */
+  readonly orderedDecisions: readonly ScheduleDecision[];
+
+  /**
+   * Decisions that successfully placed a job on an eligible worker.
+   */
+  readonly scheduledDecisions: readonly ScheduledDecision[];
+
+  /**
+   * Decisions where the job could not be placed, with reasons.
+   */
+  readonly unschedulableDecisions: readonly UnschedulableDecision[];
+}
+
+/**
  * Pluggable worker selection policy interface.
  * Given a set of eligible workers that satisfy job requirements,
  * selects exactly one worker according to the policy rules.
@@ -80,6 +120,7 @@ export interface SchedulerOptions {
   readonly workerSource?: WorkerSource;
   readonly jobSource?: JobSource;
   readonly selectionPolicy?: WorkerSelectionPolicy;
+  readonly jobPolicy?: JobOrderingPolicy;
   readonly matcher?: EligibilityMatcher;
   readonly logger?: Logger;
 }

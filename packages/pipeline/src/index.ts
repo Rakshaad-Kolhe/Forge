@@ -8,4 +8,5 @@ export * from './job-attempt.js';
 export * from './job.js';
 export * from './pipeline-run.js';
 export * from './requirements.js';
+export * from './priority.js';
 export * from './matcher.js';

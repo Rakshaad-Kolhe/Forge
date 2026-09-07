@@ -52,11 +52,12 @@ export class PgJobRepository implements JobRepository {
     try {
       await this.client.query(
         `
-        INSERT INTO jobs (id, pipeline_run_id, step_name, command, depends_on, requirements, status, created_at)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, NOW())
+        INSERT INTO jobs (id, pipeline_run_id, step_name, command, depends_on, requirements, priority, status, created_at)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, NOW())
         ON CONFLICT (id) DO UPDATE
         SET status = EXCLUDED.status,
-            requirements = EXCLUDED.requirements;
+            requirements = EXCLUDED.requirements,
+            priority = EXCLUDED.priority;
       `,
         [
           job.id,
@@ -65,6 +66,7 @@ export class PgJobRepository implements JobRepository {
           job.command,
           dependsOnJson,
           requirementsJson,
+          job.priority,
           job.status,
         ],
       );
@@ -107,7 +109,7 @@ export class PgJobRepository implements JobRepository {
     try {
       const res = await this.client.query<JobRow>(
         `
-        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, status, created_at
+        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, priority, status, created_at
         FROM jobs
         WHERE id = $1;
       `,
@@ -135,7 +137,7 @@ export class PgJobRepository implements JobRepository {
     try {
       const res = await this.client.query<JobRow>(
         `
-        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, status, created_at
+        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, priority, status, created_at
         FROM jobs
         WHERE pipeline_run_id = $1
         ORDER BY created_at ASC;
@@ -188,6 +190,7 @@ export class PgJobRepository implements JobRepository {
         command: row.command,
         dependsOn,
         requirements,
+        priority: row.priority ?? 0,
         initialStatus: row.status as JobStatus,
         attempts,
       });

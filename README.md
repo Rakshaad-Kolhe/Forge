@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 10: Scheduler Foundation & Deterministic Worker Selection**.
+This repository is currently at **PR 11: Priority Scheduling & Deterministic Job Ordering**.
 
 ---
 
@@ -13,27 +13,26 @@ This repository is currently at **PR 10: Scheduler Foundation & Deterministic Wo
 - **Repository Architecture**: Monorepo layout using standard NPM workspaces (`apps/*`, `packages/*`).
 - **TypeScript Setup**: Strict TypeScript 5 with composite project references and shared compiler options.
 - **Shared Packages**:
-  - `@forge/contracts`: Shared data contracts, types, and interfaces (including `WorkerCapabilities`, `WorkerResources`, `JobRequirements`, and `ScheduleDecision`).
+  - `@forge/contracts`: Shared data contracts, types, and interfaces (including `WorkerCapabilities`, `WorkerResources`, `JobRequirements`, `ScheduleDecision`, and bounded `JobPriority` constants `[-1000, 1000]`).
   - `@forge/config`: Strongly typed runtime environment validation using Zod.
   - `@forge/logging`: Structured logger (human-readable in development, newline-delimited JSON in production).
-  - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines, Job Execution Requirements, and pure deterministic capability/resource matching).
-  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, worker registry, and persisted job requirements).
+  - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines, Job Execution Requirements, Job Priority validation and propagation, and pure deterministic capability/resource matching).
+  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, worker registry, persisted job requirements, and priority column with CHECK constraint and index).
   - `@forge/redis`: Redis coordination foundation (Connection management, health checks, low-level generic primitives, TTL, atomic operations, and real Redis integration tests).
   - `@forge/queue`: Redis-backed reliable FIFO job queue (At-least-once delivery, explicit acknowledgement, queue depth, in-flight visibility tracking, crash/unacknowledged recovery, and competing consumer coordination).
   - `@forge/worker-registry`: Distributed worker registration and liveness coordination (Durable worker metadata and hardware capacity in PostgreSQL, transient heartbeat state with TTL in Redis, crash/stale detection, graceful deregistration, and isolated lifecycle state machines).
 - **Service Shells & Applications**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
-  - `apps/scheduler`: Task scheduler service (`@forge/scheduler`) providing operational eligibility evaluation (`READY + ALIVE`), deterministic baseline worker selection policy (`DeterministicFirstEligible`), explainable placement decisions, and unacknowledged queue recoverability.
+  - `apps/scheduler`: Task scheduler service (`@forge/scheduler`) providing operational eligibility evaluation (`READY + ALIVE`), deterministic worker selection policy (`DeterministicFirstEligible`), priority scheduling policy (`HighestPriorityFirstPolicy`), canonical alphanumeric tie-breaking, non-blocking unschedulable semantics, batch evaluation, and unacknowledged queue recoverability.
   - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, and graceful deregistration.
   - `apps/cli`: CLI executable supporting `--help` and `--version`.
   - `apps/web`: Next.js landing page displaying architectural boundaries.
-- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, capability/resource matching, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, worker service shell, scheduler selection policies, and full scheduler integration.
+- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, capability/resource matching, job priority validation, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, worker service shell, scheduler selection policies, priority ordering, and full scheduler integration.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
 - **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, worker registration spec, resource matching spec, and scheduler architecture spec in `docs/architecture/`.
 
 ### Planned (Future PRs)
 
-- Priority scheduling and weighted fairness policies (PR 11)
 - Worker task claiming and heartbeat ownership leases (PR 12)
 - Container executors (Docker daemon and Kubernetes job runners)
 - Real-time WebSocket streaming for live logs and job statuses

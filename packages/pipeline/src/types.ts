@@ -53,6 +53,7 @@ export interface StepDefinition {
   command: string;
   dependsOn?: string[];
   requirements?: JobRequirements;
+  priority?: number;
 }
 
 export interface PipelineDefinition {
@@ -69,6 +70,7 @@ export interface PipelineStepSerialized {
   command: string;
   dependsOn: string[];
   requirements?: JobRequirements;
+  priority: number;
 }
 
 export interface PipelineSerialized {
@@ -95,6 +97,7 @@ export interface JobSerialized {
   command: string;
   dependsOn: string[];
   requirements?: JobRequirements;
+  priority: number;
   status: JobStatus;
   attempts: JobAttemptSerialized[];
 }
