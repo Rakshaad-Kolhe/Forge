@@ -14,24 +14,42 @@ export class ConfigValidationError extends Error {
   }
 }
 
-const configSchema = z.object({
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-  API_PORT: z
-    .string()
-    .regex(/^\d+$/, 'API_PORT must be a valid integer')
-    .default('3000')
-    .transform(Number)
-    .pipe(
-      z
-        .number()
-        .int()
-        .min(1, 'API_PORT must be at least 1')
-        .max(65535, 'API_PORT cannot exceed 65535'),
-    ),
-  DATABASE_URL: z.string().default('postgresql://forge:forge@127.0.0.1:5432/forge'),
-  REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
-});
+const configSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+    LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+    API_PORT: z
+      .string()
+      .regex(/^\d+$/, 'API_PORT must be a valid integer')
+      .default('3000')
+      .transform(Number)
+      .pipe(
+        z
+          .number()
+          .int()
+          .min(1, 'API_PORT must be at least 1')
+          .max(65535, 'API_PORT cannot exceed 65535'),
+      ),
+    DATABASE_URL: z.string().default('postgresql://forge:forge@127.0.0.1:5432/forge'),
+    REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
+    WORKER_HEARTBEAT_INTERVAL_MS: z
+      .string()
+      .regex(/^\d+$/, 'WORKER_HEARTBEAT_INTERVAL_MS must be a valid integer')
+      .default('5000')
+      .transform(Number)
+      .pipe(z.number().int().min(100, 'WORKER_HEARTBEAT_INTERVAL_MS must be at least 100ms')),
+    WORKER_HEARTBEAT_TTL_SECONDS: z
+      .string()
+      .regex(/^\d+$/, 'WORKER_HEARTBEAT_TTL_SECONDS must be a valid integer')
+      .default('15')
+      .transform(Number)
+      .pipe(z.number().int().min(1, 'WORKER_HEARTBEAT_TTL_SECONDS must be at least 1 second')),
+  })
+  .refine((data) => data.WORKER_HEARTBEAT_TTL_SECONDS * 1000 > data.WORKER_HEARTBEAT_INTERVAL_MS, {
+    message:
+      'WORKER_HEARTBEAT_TTL_SECONDS (in ms) must be greater than WORKER_HEARTBEAT_INTERVAL_MS',
+    path: ['WORKER_HEARTBEAT_TTL_SECONDS'],
+  });
 
 export type RawConfigInput = Record<string, string | undefined>;
 
@@ -55,7 +73,15 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     );
   }
 
-  const { NODE_ENV, LOG_LEVEL, API_PORT, DATABASE_URL, REDIS_URL } = result.data;
+  const {
+    NODE_ENV,
+    LOG_LEVEL,
+    API_PORT,
+    DATABASE_URL,
+    REDIS_URL,
+    WORKER_HEARTBEAT_INTERVAL_MS,
+    WORKER_HEARTBEAT_TTL_SECONDS,
+  } = result.data;
 
   return {
     nodeEnv: NODE_ENV as NodeEnvironment,
@@ -63,5 +89,7 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     apiPort: API_PORT,
     databaseUrl: DATABASE_URL,
     redisUrl: REDIS_URL,
+    workerHeartbeatIntervalMs: WORKER_HEARTBEAT_INTERVAL_MS,
+    workerHeartbeatTtlSeconds: WORKER_HEARTBEAT_TTL_SECONDS,
   };
 }

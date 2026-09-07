@@ -73,10 +73,32 @@ CREATE TABLE IF NOT EXISTS job_attempts (
 CREATE INDEX IF NOT EXISTS idx_job_attempts_job_id ON job_attempts(job_id);
 `;
 
+export const WORKER_REGISTRY_SQL = `-- Forge V2: PR 08 - Worker Registry Schema
+CREATE TABLE IF NOT EXISTS workers (
+  id VARCHAR(255) PRIMARY KEY,
+  status VARCHAR(50) NOT NULL,
+  hostname VARCHAR(255),
+  executors JSONB NOT NULL DEFAULT '[]',
+  resources JSONB NOT NULL,
+  registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT chk_workers_status CHECK (
+    status IN ('STARTING', 'READY', 'DRAINING', 'OFFLINE')
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_workers_status ON workers(status);
+CREATE INDEX IF NOT EXISTS idx_workers_registered_at ON workers(registered_at);
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     name: '001_initial_schema',
     sql: INITIAL_SCHEMA_SQL,
+  },
+  {
+    name: '002_worker_registry',
+    sql: WORKER_REGISTRY_SQL,
   },
 ]);
 
@@ -143,6 +165,7 @@ export async function runMigrations(client: DatabaseClient): Promise<string[]> {
  */
 export async function resetDatabase(client: DatabaseClient): Promise<void> {
   await client.query(`
+    DROP TABLE IF EXISTS workers CASCADE;
     DROP TABLE IF EXISTS job_attempts CASCADE;
     DROP TABLE IF EXISTS jobs CASCADE;
     DROP TABLE IF EXISTS pipeline_runs CASCADE;

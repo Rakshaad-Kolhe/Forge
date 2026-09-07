@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 07: Reliable FIFO Job Queue**.
+This repository is currently at **PR 08: Worker Registration & Heartbeat**.
 
 ---
 
@@ -17,18 +17,19 @@ This repository is currently at **PR 07: Reliable FIFO Job Queue**.
   - `@forge/config`: Strongly typed runtime environment validation using Zod.
   - `@forge/logging`: Structured logger (human-readable in development, newline-delimited JSON in production).
   - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines).
-  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, and atomic aggregate persistence).
+  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, worker registry table, and atomic aggregate persistence).
   - `@forge/redis`: Redis coordination foundation (Connection management, health checks, low-level generic primitives, TTL, atomic operations, and real Redis integration tests).
   - `@forge/queue`: Redis-backed reliable FIFO job queue (At-least-once delivery, explicit acknowledgement, queue depth, in-flight visibility tracking, crash/unacknowledged recovery, and competing consumer coordination).
-- **Minimal Service Shells**:
+  - `@forge/worker-registry`: Distributed worker registration and liveness coordination (Durable worker metadata and hardware capacity in PostgreSQL, transient heartbeat state with TTL in Redis, crash/stale detection, graceful deregistration, and isolated lifecycle state machines).
+- **Service Shells**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
   - `apps/scheduler`: Process shell with structured startup/shutdown lifecycle.
-  - `apps/worker`: Process shell with structured startup/shutdown lifecycle.
+  - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, and graceful deregistration.
   - `apps/cli`: CLI executable supporting `--help` and `--version`.
   - `apps/web`: Next.js landing page displaying architectural boundaries.
-- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, PostgreSQL persistence, Redis coordination, and FIFO job queue.
+- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, and worker service shell.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
-- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, and queue architecture spec in `docs/architecture/`.
+- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, and worker registration spec in `docs/architecture/`.
 
 ### Planned (Future PRs)
 
@@ -61,17 +62,21 @@ forge/
 │   ├── pipeline/       # Core pipeline domain model, DAG, state machines
 │   ├── database/       # PostgreSQL connection, migrations, repositories
 │   ├── redis/          # Redis connection, health checks, coordination primitives
-│   └── queue/          # Redis-backed FIFO job queue and recovery primitives
+│   ├── queue/          # Redis-backed FIFO job queue and recovery primitives
+│   └── worker-registry/# Worker registration, metadata and heartbeat coordination
 ├── docs/
 │   └── architecture/
 │       ├── decisions/  # Architecture Decision Records (ADR-001 - ADR-005)
 │       ├── database.md # PostgreSQL persistence architecture
 │       ├── redis.md    # Redis coordination architecture
+│       ├── queue.md    # Reliable FIFO job queue architecture
+│       ├── workers.md  # Worker registration & heartbeat architecture
 │       ├── domain-model.md # Domain model & state machines specification
 │       ├── glossary.md # Architectural domain glossary
 │       ├── invariants.md # Non-negotiable architectural rules
 │       ├── overview.md # System overview and roadmap
 │       └── boundaries.md # Service boundaries and allowed roles
+
 ├── .env.example        # Foundational environment variable template
 ├── tsconfig.base.json  # Shared strict TypeScript configuration
 ├── package.json        # Workspace configuration and root scripts
@@ -176,6 +181,7 @@ npm run build -w apps/web
 - [Transactional Domain Persistence & State Integrity](docs/architecture/persistence-integrity.md)
 - [Redis Coordination Foundation](docs/architecture/redis.md)
 - [Reliable FIFO Job Queue](docs/architecture/queue.md)
+- [Worker Registration & Heartbeat](docs/architecture/workers.md)
 - [Architecture Glossary](docs/architecture/glossary.md)
 - [Architectural Invariants Catalog](docs/architecture/invariants.md)
 

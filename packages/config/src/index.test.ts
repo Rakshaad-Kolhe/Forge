@@ -10,6 +10,8 @@ describe('loadConfig', () => {
       apiPort: 3000,
       databaseUrl: 'postgresql://forge:forge@127.0.0.1:5432/forge',
       redisUrl: 'redis://127.0.0.1:6379',
+      workerHeartbeatIntervalMs: 5000,
+      workerHeartbeatTtlSeconds: 15,
     });
   });
 
@@ -20,6 +22,8 @@ describe('loadConfig', () => {
       API_PORT: '8080',
       DATABASE_URL: 'postgresql://custom:custom@localhost:5433/custom_db',
       REDIS_URL: 'redis://custom:custom@localhost:6380',
+      WORKER_HEARTBEAT_INTERVAL_MS: '2000',
+      WORKER_HEARTBEAT_TTL_SECONDS: '10',
     });
     expect(config).toEqual({
       nodeEnv: 'production',
@@ -27,6 +31,8 @@ describe('loadConfig', () => {
       apiPort: 8080,
       databaseUrl: 'postgresql://custom:custom@localhost:5433/custom_db',
       redisUrl: 'redis://custom:custom@localhost:6380',
+      workerHeartbeatIntervalMs: 2000,
+      workerHeartbeatTtlSeconds: 10,
     });
   });
 
@@ -64,6 +70,15 @@ describe('loadConfig', () => {
     expect(() => {
       loadConfig({
         API_PORT: '0',
+      });
+    }).toThrow(ConfigValidationError);
+  });
+
+  it('fails clearly when WORKER_HEARTBEAT_TTL_SECONDS is less than or equal to interval', () => {
+    expect(() => {
+      loadConfig({
+        WORKER_HEARTBEAT_INTERVAL_MS: '10000', // 10s
+        WORKER_HEARTBEAT_TTL_SECONDS: '5', // 5s < 10s
       });
     }).toThrow(ConfigValidationError);
   });

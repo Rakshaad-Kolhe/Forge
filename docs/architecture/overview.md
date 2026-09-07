@@ -32,6 +32,7 @@ Forge V2 is designed as a distributed system composed of:
 - **PR 05: Transactional Domain Persistence & State Integrity (Completed)**: Protected persistence boundary, terminal state immutability, state machine enforcement, and atomic aggregate persistence.
 - **PR 06: Redis Coordination Foundation (Completed)**: Managed Redis client, active health checking, key-value primitives, TTL, atomic coordination, and real Redis integration tests.
 - **PR 07: Reliable FIFO Job Queue (Completed)**: Redis-backed FIFO queue abstraction (`@forge/queue`), atomic dispatch, in-flight visibility tracking, unacknowledged crash recovery, and competing consumer coordination.
+- **PR 08: Worker Registration & Heartbeat (Completed)**: Distributed worker registration, durable metadata in PostgreSQL, transient liveness in Redis (`@forge/worker-registry`), crash/stale detection, and graceful lifecycle management.
 
 ---
 
@@ -47,6 +48,7 @@ Forge V2 is designed as a distributed system composed of:
 - **[Transactional Domain Persistence Specification](persistence-integrity.md)**
 - **[Redis Coordination Foundation Specification](redis.md)**
 - **[Reliable FIFO Job Queue Specification](queue.md)**
+- **[Worker Registration & Heartbeat Specification](workers.md)**
 - **[Architecture Glossary](glossary.md)**
 - **[Architectural Invariants Catalog](invariants.md)**
 - **[Service Boundaries Specification](boundaries.md)**
@@ -70,9 +72,9 @@ PR 01: Repository Foundation & Architecture Contract (Completed)
   │
   ├──► PR 07: Reliable FIFO Job Queue (Completed)
   │
-  ├──► PR 08: Distributed Task Scheduler & Execution Engine (Planned)
+  ├──► PR 08: Worker Registration & Heartbeat (Completed)
   │
-  ├──► PR 09: Worker Runtime, Heartbeats & Container Executors (Planned)
+  ├──► PR 09: Distributed Task Scheduler & Lease Allocation (Planned)
   │
-  └──► PR 10: API Ingress, Auth & Production Observability (Planned)
+  └──► PR 10: Container Executors & Production Observability (Planned)
 ```
