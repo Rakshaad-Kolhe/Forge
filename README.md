@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 08: Worker Registration & Heartbeat**.
+This repository is currently at **PR 09: Worker Capability & Resource Matching**.
 
 ---
 
@@ -13,11 +13,11 @@ This repository is currently at **PR 08: Worker Registration & Heartbeat**.
 - **Repository Architecture**: Monorepo layout using standard NPM workspaces (`apps/*`, `packages/*`).
 - **TypeScript Setup**: Strict TypeScript 5 with composite project references and shared compiler options.
 - **Shared Packages**:
-  - `@forge/contracts`: Shared data contracts, types, and interfaces.
+  - `@forge/contracts`: Shared data contracts, types, and interfaces (including `WorkerCapabilities`, `WorkerResources`, `JobRequirements`).
   - `@forge/config`: Strongly typed runtime environment validation using Zod.
   - `@forge/logging`: Structured logger (human-readable in development, newline-delimited JSON in production).
-  - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines).
-  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, worker registry table, and atomic aggregate persistence).
+  - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines, Job Execution Requirements, and pure deterministic capability/resource matching).
+  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, worker registry, and persisted job requirements).
   - `@forge/redis`: Redis coordination foundation (Connection management, health checks, low-level generic primitives, TTL, atomic operations, and real Redis integration tests).
   - `@forge/queue`: Redis-backed reliable FIFO job queue (At-least-once delivery, explicit acknowledgement, queue depth, in-flight visibility tracking, crash/unacknowledged recovery, and competing consumer coordination).
   - `@forge/worker-registry`: Distributed worker registration and liveness coordination (Durable worker metadata and hardware capacity in PostgreSQL, transient heartbeat state with TTL in Redis, crash/stale detection, graceful deregistration, and isolated lifecycle state machines).
@@ -27,9 +27,9 @@ This repository is currently at **PR 08: Worker Registration & Heartbeat**.
   - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, and graceful deregistration.
   - `apps/cli`: CLI executable supporting `--help` and `--version`.
   - `apps/web`: Next.js landing page displaying architectural boundaries.
-- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, and worker service shell.
+- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, capability/resource matching, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, and worker service shell.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
-- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, and worker registration spec in `docs/architecture/`.
+- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, worker registration spec, and resource matching spec in `docs/architecture/`.
 
 ### Planned (Future PRs)
 
@@ -71,6 +71,7 @@ forge/
 │       ├── redis.md    # Redis coordination architecture
 │       ├── queue.md    # Reliable FIFO job queue architecture
 │       ├── workers.md  # Worker registration & heartbeat architecture
+│       ├── resource-matching.md # Worker capability & resource matching architecture
 │       ├── domain-model.md # Domain model & state machines specification
 │       ├── glossary.md # Architectural domain glossary
 │       ├── invariants.md # Non-negotiable architectural rules
@@ -182,6 +183,7 @@ npm run build -w apps/web
 - [Redis Coordination Foundation](docs/architecture/redis.md)
 - [Reliable FIFO Job Queue](docs/architecture/queue.md)
 - [Worker Registration & Heartbeat](docs/architecture/workers.md)
+- [Worker Capability & Resource Matching](docs/architecture/resource-matching.md)
 - [Architecture Glossary](docs/architecture/glossary.md)
 - [Architectural Invariants Catalog](docs/architecture/invariants.md)
 

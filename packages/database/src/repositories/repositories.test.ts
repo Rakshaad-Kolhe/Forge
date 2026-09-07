@@ -430,6 +430,57 @@ describe('PostgreSQL Repositories Integration Tests', () => {
       const afterRegress = await jobRepo.findById(job.id);
       expect(afterRegress!.status).toBe('SUCCEEDED');
     });
+
+    it('persists and reconstructs job execution requirements accurately', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-job-reqs',
+        name: 'Job Requirements Pipeline',
+        steps: [
+          {
+            name: 'heavy-task',
+            command: 'cargo build --release',
+            requirements: {
+              executor: 'docker',
+              cpuCores: 8,
+              memoryBytes: 16 * 1024 * 1024 * 1024,
+              gpuCount: 2,
+            },
+          },
+        ],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-job-reqs-1'), pipeline);
+      await pipelineRunRepo.save(run);
+
+      const job = run.getJobs()[0]!;
+      expect(job.requirements).toEqual({
+        executor: 'docker',
+        cpuCores: 8,
+        memoryBytes: 16 * 1024 * 1024 * 1024,
+        gpuCount: 2,
+      });
+
+      // Find via findById
+      const loadedJob = await jobRepo.findById(job.id);
+      expect(loadedJob).not.toBeNull();
+      expect(loadedJob!.requirements).toEqual({
+        executor: 'docker',
+        cpuCores: 8,
+        memoryBytes: 16 * 1024 * 1024 * 1024,
+        gpuCount: 2,
+      });
+
+      // Find via findByPipelineRunId
+      const loadedJobs = await jobRepo.findByPipelineRunId(run.id);
+      expect(loadedJobs).toHaveLength(1);
+      expect(loadedJobs[0]!.requirements).toEqual({
+        executor: 'docker',
+        cpuCores: 8,
+        memoryBytes: 16 * 1024 * 1024 * 1024,
+        gpuCount: 2,
+      });
+    });
   });
 
   describe('PgJobAttemptRepository', () => {

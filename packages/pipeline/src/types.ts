@@ -43,6 +43,8 @@ export type JobStatus =
 export type JobAttemptStatus =
   'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'TIMED_OUT';
 
+import type { JobRequirements } from '@forge/contracts';
+
 /**
  * Plain object definition schemas for authoring pipelines.
  */
@@ -50,6 +52,7 @@ export interface StepDefinition {
   name: string;
   command: string;
   dependsOn?: string[];
+  requirements?: JobRequirements;
 }
 
 export interface PipelineDefinition {
@@ -65,6 +68,7 @@ export interface PipelineStepSerialized {
   name: string;
   command: string;
   dependsOn: string[];
+  requirements?: JobRequirements;
 }
 
 export interface PipelineSerialized {
@@ -90,6 +94,7 @@ export interface JobSerialized {
   stepName: string;
   command: string;
   dependsOn: string[];
+  requirements?: JobRequirements;
   status: JobStatus;
   attempts: JobAttemptSerialized[];
 }

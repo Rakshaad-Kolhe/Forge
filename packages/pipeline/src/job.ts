@@ -1,4 +1,5 @@
 import { JobAttempt } from './job-attempt.js';
+import { validateJobRequirements, type JobRequirements } from './requirements.js';
 import { createJobStateMachine, type StateMachine } from './state-machine.js';
 import {
   createJobAttemptId,
@@ -14,6 +15,7 @@ export interface JobOptions {
   stepName: string;
   command: string;
   dependsOn?: readonly string[];
+  requirements?: JobRequirements;
   initialStatus?: JobStatus;
   attempts?: readonly JobAttempt[];
 }
@@ -27,6 +29,7 @@ export class Job {
   public readonly stepName: string;
   public readonly command: string;
   public readonly dependsOn: readonly string[];
+  public readonly requirements: JobRequirements;
   private readonly stateMachine: StateMachine<JobStatus>;
   private readonly attemptsList: JobAttempt[] = [];
 
@@ -36,6 +39,7 @@ export class Job {
     this.stepName = options.stepName;
     this.command = options.command;
     this.dependsOn = Object.freeze([...(options.dependsOn ?? [])]);
+    this.requirements = validateJobRequirements(options.requirements);
     this.stateMachine = createJobStateMachine(options.id, options.initialStatus ?? 'PENDING');
     if (options.attempts) {
       this.attemptsList.push(...options.attempts);
@@ -111,6 +115,7 @@ export class Job {
       stepName: this.stepName,
       command: this.command,
       dependsOn: [...this.dependsOn],
+      ...(Object.keys(this.requirements).length > 0 ? { requirements: this.requirements } : {}),
       status: this.status,
       attempts: this.attemptsList.map((att) => att.toJSON()),
     };
