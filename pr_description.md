@@ -1,78 +1,123 @@
-# PR 07: Reliable FIFO Job Queue
+# PR 08: Worker Registration & Heartbeat
 
 ## Summary
 
-Establishes Forge V2's first distributed coordination mechanism: a reliable, Redis-backed FIFO job queue implemented in `@forge/queue`. Built on top of the `@forge/redis` infrastructure package, this PR provides deterministic enqueue, dequeue, explicit acknowledgement, queue depth inspection, in-flight visibility tracking, crash/unacknowledged recovery, duplicate delivery tolerance, and safe reference-only serialization under Forge's **at-least-once delivery + idempotent consumer** architectural model.
+This pull request implements **PR 08: Worker Registration & Heartbeat** of Forge V2, establishing the worker-side distributed infrastructure for worker identity, durable metadata registration in PostgreSQL, transient liveness coordination in Redis with atomic TTL expiration, crash/stale detection, and graceful lifecycle management.
 
-Crucially:
-
-- **PostgreSQL remains the sole durable source of truth.** The queue carries lightweight job-dispatch references (`messageId`, `jobId`, `pipelineRunId`, `stepName`, `attemptNumber`), not mutable aggregates, cluster configs, or secrets.
-- **At-least-once delivery is preserved; exactly-once execution is explicitly NOT claimed.**
-- **Zero new external runtime dependencies.** Built 100% natively on `@forge/redis`.
-- **Zero background daemons, worker loops, or scheduler polling inside `@forge/queue`.**
+In accordance with **ADR-002 (PostgreSQL as Authoritative Source of Truth)** and **ADR-003 (Redis for Transient Distributed Coordination)**, worker coordination is strictly decoupled between durable capability persistence and high-frequency liveness checks.
 
 ---
 
-## Architectural Lifecycle
+## Architectural Separation
 
 ```text
-         ENQUEUE
-            │
-            ▼
-        [ READY ] ─────────────► queue.depth()
-            │
-            ▼ DEQUEUE (atomic Lua)
-       [ IN-FLIGHT ] ──────────► queue.inFlightCount()
-            │
-            ├───────────────► ACK (atomic Lua)
-            │                   │
-            │                   ▼
-            │              [ COMPLETED ] (removed from Redis)
-            │
-            └── no ACK (crash/timeout)
-                    │
-                    ▼ visibility timeout expires
-              [ RECOVERABLE ]
-                    │
-                    ▼ queue.reclaimExpired()
-              [ REDELIVERY ] (pushed back to READY, deliveryCount++)
+┌───────────────────────────────────────────────────────────────────┐
+│                       Distributed Workers                         │
+└────────┬──────────────────────────────────────────────────┬───────┘
+         │ 1. Registration / Deregistration                 │ 2. High-Frequency Heartbeat
+         │    (Infrequent: boot, drain, shutdown)           │    (Periodic: 5-15s, lightweight)
+         ▼                                                  ▼
+┌───────────────────────────────┐                  ┌───────────────────────────────┐
+│          PostgreSQL           │                  │             Redis             │
+│   (Authoritative Registry)    │                  │      (Transient Liveness)     │
+├───────────────────────────────┤                  ├───────────────────────────────┤
+│ • Table: `workers`            │                  │ • Key: `forge:worker:{id}:hb` │
+│ • Durable identity (workerId) │                  │ • Expiring string (TTL 15s)   │
+│ • Hardware resources & specs  │                  │ • Zero database I/O on tick   │
+│ • Executor capabilities       │                  │ • Auto-expires on crash       │
+│ • Preserved indefinitely      │                  │ • Ephemeral state only        │
+└───────────────────────────────┘                  └───────────────────────────────┘
 ```
 
 ---
 
-## Key Technical Decisions & Data Structures
+## What Was Implemented
 
-Composite pattern across four Redis keys:
+### 1. Database Persistence Layer (`packages/database`)
 
-- `forge:queue:{queueName}:ready`: Redis List (`LPUSH` on enqueue, `RPOP` on dequeue for strict FIFO).
-- `forge:queue:{queueName}:messages`: Redis Hash (`messageId` -> JSON serialized reference payload).
-- `forge:queue:{queueName}:in_flight`: Redis Sorted Set (score = `visibilityExpiresAt` in ms, member = `messageId`).
-- `forge:queue:{queueName}:meta`: Redis Hash (`messageId` -> `{ deliveryCount, enqueuedAt, deliveredAt, deliveryId }`).
+- **Migration `002_worker_registry.sql`**:
+  - Adds the `workers` table with `id`, `status`, `hostname`, `executors` (JSONB), `resources` (JSONB), `registered_at`, and `updated_at`.
+  - Enforces `chk_workers_status CHECK (status IN ('STARTING', 'READY', 'DRAINING', 'OFFLINE'))`.
+  - Registered in `migrator.ts` both in `MIGRATIONS` and `resetDatabase`.
+- **`WorkerRepository` Contract & `PgWorkerRepository` Implementation**:
+  - Typed interface for `save`, `findById`, `list`, `updateStatus`, and `delete`.
+  - Implements idempotent upsert via `ON CONFLICT (id) DO UPDATE`.
+  - Preserves historical records; stale workers are never deleted.
 
-### Atomic Lua Scripts
+### 2. Configuration & Contracts (`packages/contracts`, `@forge/config`, `.env.example`)
 
-1. **FIFO Dequeue**: Pops from `ready`, inspects `messages`, updates `meta`, and inserts into `in_flight` with visibility timeout in a single Redis transaction. Competing consumers never receive the same ready message concurrently.
-2. **Explicit Acknowledgement**: Atomically removes message from `in_flight`, `messages`, and `meta`. Returns `true` on first ACK, `false` on repeat calls idempotently.
-3. **Reclaim Expired**: Finds in-flight entries where `score <= nowMs`, removes them from `in_flight`, and restores them to `ready` with priority (`RPUSH`), incrementing `deliveryCount` upon subsequent delivery.
+- Added `workerHeartbeatIntervalMs` (default: 5000ms) and `workerHeartbeatTtlSeconds` (default: 15s).
+- Zod schema validation ensuring `(workerHeartbeatTtlSeconds * 1000) > workerHeartbeatIntervalMs`.
+- Documented in `.env.example`.
+
+### 3. Worker Registry Infrastructure (`packages/worker-registry`)
+
+- **Worker Types (`src/types.ts`)**:
+  - Branded `WorkerId` with `createWorkerId()` validator.
+  - Lifecycle statuses: `STARTING`, `READY`, `DRAINING`, `OFFLINE`.
+  - Liveness states: `ALIVE`, `STALE`.
+  - Hardware capacity: `WorkerResources` (`cpuCores`, `memoryBytes`, optional `gpuCount`).
+  - Execution capabilities: `WorkerCapabilities` (`executors`).
+  - Ephemeral heartbeat: `WorkerHeartbeat` payload.
+  - Unified view: `WorkerInfo` combining PostgreSQL metadata with Redis real-time liveness.
+- **Heartbeat Store (`src/heartbeat.ts`)**:
+  - Manages `forge:worker:{workerId}:heartbeat` keys using Redis `setJson(key, payload, { ttlSeconds })`.
+  - High-frequency heartbeat renewals write exclusively to Redis with atomic TTL (`SET ... EX`).
+  - Zero database queries generated during normal heartbeat ticks.
+- **Worker Registry Coordinator (`src/registry.ts`)**:
+  - Coordinates PostgreSQL durable writes and Redis transient keys.
+  - `register()`: Idempotent upsert in PostgreSQL + initial Redis heartbeat key.
+  - `heartbeat()`: Fast-path TTL renewal in Redis.
+  - `deregister()`: Deletes Redis heartbeat key immediately and transitions PostgreSQL status to `OFFLINE`.
+  - `getWorker()`: Composes PostgreSQL row with Redis liveness.
+  - `listWorkers()`: Supports filtering by lifecycle status and liveness (`ALIVE` / `STALE`).
+
+### 4. Worker Service Shell Integration (`apps/worker`)
+
+- Inspects system compute capacity (`os.cpus().length`, `os.totalmem()`, `os.hostname()`).
+- Automated registration on startup.
+- Unref'd background periodic timer renewing heartbeat.
+- Graceful deregistration and cleanup on `shell.stop()`, `SIGTERM`, and `SIGINT`.
+
+### 5. Architectural Documentation (`docs/architecture/workers.md`)
+
+- Complete architectural specification detailing durable vs. transient roles, state machines, crash semantics, and non-guarantees.
+- Updated `docs/architecture/overview.md` and `README.md`.
 
 ---
 
-## What is NOT Implemented (Strict Scope Discipline)
+## Architectural Invariants & Non-Guarantees (PR 08 Scope Boundary)
 
-- **NO Scheduler engine** (scheduling loops and DAG resolution belong to future PR).
-- **NO Worker claiming / leases / heartbeats** (worker management belongs to future PR).
-- **NO Priority scheduling or weighted fairness** (queue is strictly FIFO).
-- **NO Retry policies, exponential backoff, or Dead-Letter Queues (DLQ)**.
-- **NO Pub/Sub, WebSockets, or event fanout**.
-- **NO Dual-writes or distributed transactions between PostgreSQL and Redis**.
+- **Heartbeat is NOT a Lease**: A worker heartbeat indicates node liveness. It does not grant or extend ownership of any specific job or pipeline.
+- **No Job Claiming or Worker Dispatch**: Workers do NOT dequeue jobs or execute tasks in this PR. Scheduler-driven dispatch and container runners remain planned for subsequent PRs.
+- **Stale Workers are Never Deleted**: Crashed or disconnected workers remain in PostgreSQL for auditability and post-mortem analysis.
 
 ---
 
-## Verification Results
+## Verification & Testing
 
-- `npm run lint`: **PASS** (0 errors, 0 warnings)
-- `npm run format:check`: **PASS** (All matched files use Prettier style)
-- `npm run typecheck`: **PASS** (`tsc -b` compiled all packages and applications)
-- `npm test`: **PASS** (20 test suites, 156/156 tests passing, including 23 `@forge/queue` tests and 30 `@forge/redis` tests)
-- `npm run build`: **PASS** (All packages, shells, and Next.js built cleanly)
-- **Manual smoke test against real Redis**: **PASS** (Enqueue A, B, C -> Dequeue A, B -> ACK A, B -> simulate unacknowledged crash on C -> visibility timeout expiry -> reclaimExpired -> redeliver C with deliveryCount=2 -> ACK C -> depth=0, inFlight=0)
+### Automated Test Suites
+
+1. **Config Tests** (`packages/config`):
+   - Validates interval, TTL, and relationship constraints (`(TTL * 1000) > interval`).
+2. **Database Integration Tests** (`packages/database`):
+   - All 30 tests pass, including migration application and rollback.
+3. **Worker Registry Unit Tests** (`packages/worker-registry`):
+   - 10 unit tests verifying ID branding, input validation, and heartbeat key naming.
+4. **Worker Registry Real Integration Tests** (`packages/worker-registry`):
+   - 7 integration tests against live PostgreSQL and Redis instances:
+     - Worker registration and durable persistence.
+     - Idempotent repeated registration.
+     - Heartbeat TTL renewal without PostgreSQL writes.
+     - Crash simulation and TTL expiry (STALE detection with preserved DB record).
+     - Worker reconnection and revival.
+     - Graceful deregistration (status OFFLINE, Redis key deleted).
+     - Concurrent worker isolation and multi-worker filtering.
+5. **Worker Service Shell Tests** (`apps/worker`):
+   - Standalone startup and stop.
+   - Registry coordination, background timer, and graceful shutdown.
+6. **Full Monorepo Verification**:
+   - `npm run typecheck`: Strict TypeScript compiler checks across all workspaces pass cleanly.
+   - `npm run lint`: All ESLint checks pass.
+   - `npm run format:check`: Formatting clean.
+   - `npm run build`: Production build of all packages and applications succeeds.

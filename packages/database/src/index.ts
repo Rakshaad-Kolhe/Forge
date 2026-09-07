@@ -28,12 +28,19 @@ export type { JobAttemptRepository } from './repositories/contracts/job-attempt-
 export type { JobRepository } from './repositories/contracts/job-repository.contract.js';
 export type { PipelineRepository } from './repositories/contracts/pipeline-repository.contract.js';
 export type { PipelineRunRepository } from './repositories/contracts/pipeline-run-repository.contract.js';
+export type {
+  WorkerLifecycleStatus,
+  WorkerRecord,
+  WorkerRepository,
+  WorkerResourcesRecord,
+} from './repositories/contracts/worker-repository.contract.js';
 
 // Repositories - PostgreSQL Implementations
 export { PgJobAttemptRepository } from './repositories/pg-job-attempt-repository.js';
 export { PgJobRepository } from './repositories/pg-job-repository.js';
 export { PgPipelineRepository } from './repositories/pg-pipeline-repository.js';
 export { PgPipelineRunRepository } from './repositories/pg-pipeline-run-repository.js';
+export { PgWorkerRepository } from './repositories/pg-worker-repository.js';
 
 // Transactions
 export { type TransactionContext, withTransaction } from './transaction.js';

@@ -51,4 +51,6 @@ export interface AppConfig {
   apiPort: number;
   databaseUrl: string;
   redisUrl: string;
+  workerHeartbeatIntervalMs: number;
+  workerHeartbeatTtlSeconds: number;
 }
