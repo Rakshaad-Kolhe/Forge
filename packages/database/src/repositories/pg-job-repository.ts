@@ -48,16 +48,22 @@ export class PgJobRepository implements JobRepository {
 
     const dependsOnJson = JSON.stringify([...job.dependsOn]);
     const requirementsJson = JSON.stringify(job.requirements ?? {});
+    const retryPolicyJson = job.retryPolicy ? JSON.stringify(job.retryPolicy) : null;
+    const nextAttemptAt = job.nextAttemptAt ?? null;
 
     try {
       await this.client.query(
         `
-        INSERT INTO jobs (id, pipeline_run_id, step_name, command, depends_on, requirements, priority, status, created_at)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, NOW())
+        INSERT INTO jobs (
+          id, pipeline_run_id, step_name, command, depends_on, requirements, priority, retry_policy, next_attempt_at, status, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8::jsonb, $9, $10, NOW())
         ON CONFLICT (id) DO UPDATE
         SET status = EXCLUDED.status,
             requirements = EXCLUDED.requirements,
-            priority = EXCLUDED.priority;
+            priority = EXCLUDED.priority,
+            retry_policy = EXCLUDED.retry_policy,
+            next_attempt_at = EXCLUDED.next_attempt_at;
       `,
         [
           job.id,
@@ -67,6 +73,8 @@ export class PgJobRepository implements JobRepository {
           dependsOnJson,
           requirementsJson,
           job.priority,
+          retryPolicyJson,
+          nextAttemptAt,
           job.status,
         ],
       );
@@ -109,7 +117,7 @@ export class PgJobRepository implements JobRepository {
     try {
       const res = await this.client.query<JobRow>(
         `
-        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, priority, status, created_at
+        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, priority, retry_policy, next_attempt_at, status, created_at
         FROM jobs
         WHERE id = $1;
       `,
@@ -137,7 +145,7 @@ export class PgJobRepository implements JobRepository {
     try {
       const res = await this.client.query<JobRow>(
         `
-        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, priority, status, created_at
+        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, priority, retry_policy, next_attempt_at, status, created_at
         FROM jobs
         WHERE pipeline_run_id = $1
         ORDER BY created_at ASC;
@@ -157,6 +165,40 @@ export class PgJobRepository implements JobRepository {
       if (err instanceof PersistenceError) throw err;
       throw new PersistenceError(
         `Failed to find jobs for pipeline run "${pipelineRunId}": ${(err as Error).message}`,
+        err as Error,
+      );
+    }
+  }
+
+  public async findSchedulableJobs(options?: { now?: Date; limit?: number }): Promise<Job[]> {
+    const now = options?.now ?? new Date();
+    const limit = options?.limit ?? 50;
+
+    try {
+      const res = await this.client.query<JobRow>(
+        `
+        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, priority, retry_policy, next_attempt_at, status, created_at
+        FROM jobs
+        WHERE status = 'QUEUED'
+          AND (next_attempt_at IS NULL OR next_attempt_at <= $1)
+        ORDER BY priority DESC, created_at ASC
+        LIMIT $2;
+      `,
+        [now, limit],
+      );
+
+      const jobs: Job[] = [];
+      for (const row of res.rows) {
+        const jobId = createJobId(row.id);
+        const attempts = await this.attemptRepo.findByJobId(jobId);
+        jobs.push(this.mapRowToDomain(row, attempts));
+      }
+
+      return jobs;
+    } catch (err) {
+      if (err instanceof PersistenceError) throw err;
+      throw new PersistenceError(
+        `Failed to find schedulable jobs: ${(err as Error).message}`,
         err as Error,
       );
     }
@@ -183,6 +225,12 @@ export class PgJobRepository implements JobRepository {
           : row.requirements
         : undefined;
 
+      const retryPolicy = row.retry_policy
+        ? typeof row.retry_policy === 'string'
+          ? JSON.parse(row.retry_policy)
+          : row.retry_policy
+        : undefined;
+
       return new Job({
         id: createJobId(row.id),
         pipelineRunId: createPipelineRunId(row.pipeline_run_id),
@@ -191,6 +239,8 @@ export class PgJobRepository implements JobRepository {
         dependsOn,
         requirements,
         priority: row.priority ?? 0,
+        retryPolicy,
+        nextAttemptAt: row.next_attempt_at ?? undefined,
         initialStatus: row.status as JobStatus,
         attempts,
       });

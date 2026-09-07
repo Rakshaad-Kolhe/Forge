@@ -684,4 +684,126 @@ describe('Scheduler — evaluatePrioritizedWork & schedulePrioritized', () => {
       expect(mockLeaseRepo.claim).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('Scheduler — Retry Backoff Awareness', () => {
+    const worker: WorkerCandidate = {
+      workerId: 'worker-1',
+      capabilities: { executors: ['docker'] },
+      resources: { cpuCores: 4, memoryBytes: 8192 },
+    };
+
+    it('returns UNSCHEDULABLE with RETRY_BACKOFF_ACTIVE when nextAttemptAt is in the future', () => {
+      const futureDate = new Date(Date.now() + 10000);
+      const backoffJob = {
+        id: 'job-backoff',
+        requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+        nextAttemptAt: futureDate,
+      };
+
+      const decision = evaluatePlacement(backoffJob, [worker]);
+
+      expect(decision.status).toBe('UNSCHEDULABLE');
+      if (decision.status === 'UNSCHEDULABLE') {
+        expect(decision.jobId).toBe('job-backoff');
+        expect(decision.reason).toBe('RETRY_BACKOFF_ACTIVE');
+        expect(decision.failureReasons?.[0]).toContain('Retry backoff active until');
+      }
+    });
+
+    it('schedules successfully when nextAttemptAt is in the past (due for retry)', () => {
+      const pastDate = new Date(Date.now() - 5000);
+      const dueJob = {
+        id: 'job-due',
+        requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+        nextAttemptAt: pastDate,
+      };
+
+      const decision = evaluatePlacement(dueJob, [worker]);
+
+      expect(decision.status).toBe('SCHEDULED');
+      if (decision.status === 'SCHEDULED') {
+        expect(decision.jobId).toBe('job-due');
+        expect(decision.workerId).toBe('worker-1');
+      }
+    });
+
+    it('respects explicitly passed now parameter in evaluatePlacement', () => {
+      const referenceDate = new Date('2026-09-07T12:00:00Z');
+      const targetDate = new Date('2026-09-07T12:05:00Z');
+
+      const futureJob = {
+        id: 'job-param',
+        requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+        nextAttemptAt: targetDate,
+      };
+
+      // When now is before targetDate -> UNSCHEDULABLE
+      const decisionBefore = evaluatePlacement(futureJob, [worker], referenceDate);
+      expect(decisionBefore.status).toBe('UNSCHEDULABLE');
+      if (decisionBefore.status === 'UNSCHEDULABLE') {
+        expect(decisionBefore.reason).toBe('RETRY_BACKOFF_ACTIVE');
+      }
+
+      // When now is after targetDate -> SCHEDULED
+      const decisionAfter = evaluatePlacement(
+        futureJob,
+        [worker],
+        new Date('2026-09-07T12:06:00Z'),
+      );
+      expect(decisionAfter.status).toBe('SCHEDULED');
+    });
+
+    it('scheduleDueJobs queries findSchedulableJobs and schedules due jobs in priority order', async () => {
+      const dueHighJob = new Job({
+        id: createJobId('job-due-high'),
+        pipelineRunId: createPipelineRunId('run-1'),
+        stepName: 'build-high',
+        command: 'echo high',
+        requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+        priority: 100,
+        nextAttemptAt: new Date(Date.now() - 1000),
+      });
+
+      const dueLowJob = new Job({
+        id: createJobId('job-due-low'),
+        pipelineRunId: createPipelineRunId('run-1'),
+        stepName: 'build-low',
+        command: 'echo low',
+        requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+        priority: 10,
+        nextAttemptAt: new Date(Date.now() - 2000),
+      });
+
+      const mockJobSource: JobSource = {
+        findSchedulableJobs: vi.fn().mockResolvedValue([dueHighJob, dueLowJob]),
+        getJob: vi.fn(),
+      };
+
+      const scheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([worker]) },
+        jobSource: mockJobSource,
+      });
+
+      const result = await scheduler.scheduleDueJobs({ limit: 5 });
+
+      expect(mockJobSource.findSchedulableJobs).toHaveBeenCalled();
+      expect(result.processedCount).toBe(2);
+      expect(result.scheduledCount).toBe(2);
+      expect(result.scheduledDecisions[0]?.jobId).toBe(dueHighJob.id);
+      expect(result.scheduledDecisions[1]?.jobId).toBe(dueLowJob.id);
+    });
+
+    it('scheduleDueJobs throws JobSourceError if findSchedulableJobs is not implemented on JobSource', async () => {
+      const mockJobSource: JobSource = {
+        getJob: vi.fn(),
+      };
+
+      const scheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([worker]) },
+        jobSource: mockJobSource,
+      });
+
+      await expect(scheduler.scheduleDueJobs()).rejects.toThrow(JobSourceError);
+    });
+  });
 });

@@ -1,6 +1,8 @@
+import type { RetryPolicy } from '@forge/contracts';
 import { PipelineValidationError } from './errors.js';
 import { validateJobPriority } from './priority.js';
 import { validateJobRequirements, type JobRequirements } from './requirements.js';
+import { validateRetryPolicy } from './retry.js';
 import type { PipelineStepSerialized, StepDefinition } from './types.js';
 
 /**
@@ -12,6 +14,7 @@ export class PipelineStep {
   public readonly dependsOn: readonly string[];
   public readonly requirements: JobRequirements;
   public readonly priority: number;
+  public readonly retryPolicy?: RetryPolicy;
 
   constructor(definition: StepDefinition) {
     if (!definition.name || definition.name.trim().length === 0) {
@@ -36,6 +39,9 @@ export class PipelineStep {
     // Validate and store scheduling priority
     this.priority = validateJobPriority(definition.priority);
 
+    // Validate and freeze retry policy
+    this.retryPolicy = validateRetryPolicy(definition.retry);
+
     Object.freeze(this);
   }
 
@@ -49,6 +55,7 @@ export class PipelineStep {
       dependsOn: [...this.dependsOn],
       ...(Object.keys(this.requirements).length > 0 ? { requirements: this.requirements } : {}),
       priority: this.priority,
+      ...(this.retryPolicy ? { retry: this.retryPolicy } : {}),
     };
   }
 }

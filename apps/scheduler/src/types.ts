@@ -94,6 +94,7 @@ export interface WorkerSource {
  */
 export interface JobSource {
   getJob(jobId: string): Promise<Job | null>;
+  findSchedulableJobs?(options?: { now?: Date; limit?: number }): Promise<Job[]>;
 }
 
 /**

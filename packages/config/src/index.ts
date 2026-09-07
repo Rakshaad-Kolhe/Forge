@@ -78,6 +78,36 @@ const configSchema = z
       .transform(Number)
       .pipe(z.number().int().min(1024, 'MAX_OUTPUT_BYTES must be at least 1024 bytes')),
     DOCKER_HOST: z.string().optional(),
+    DEFAULT_MAX_ATTEMPTS: z
+      .string()
+      .regex(/^\d+$/, 'DEFAULT_MAX_ATTEMPTS must be a valid integer')
+      .default('1')
+      .transform(Number)
+      .pipe(z.number().int().min(1, 'DEFAULT_MAX_ATTEMPTS must be at least 1')),
+    MAX_JOB_ATTEMPTS: z
+      .string()
+      .regex(/^\d+$/, 'MAX_JOB_ATTEMPTS must be a valid integer')
+      .default('10')
+      .transform(Number)
+      .pipe(
+        z
+          .number()
+          .int()
+          .min(1, 'MAX_JOB_ATTEMPTS must be at least 1')
+          .max(100, 'MAX_JOB_ATTEMPTS cannot exceed 100'),
+      ),
+    DEFAULT_RETRY_BASE_DELAY_MS: z
+      .string()
+      .regex(/^\d+$/, 'DEFAULT_RETRY_BASE_DELAY_MS must be a valid integer')
+      .default('1000')
+      .transform(Number)
+      .pipe(z.number().int().min(100, 'DEFAULT_RETRY_BASE_DELAY_MS must be at least 100ms')),
+    MAX_RETRY_BACKOFF_MS: z
+      .string()
+      .regex(/^\d+$/, 'MAX_RETRY_BACKOFF_MS must be a valid integer')
+      .default('3600000')
+      .transform(Number)
+      .pipe(z.number().int().min(1000, 'MAX_RETRY_BACKOFF_MS must be at least 1000ms')),
   })
   .refine((data) => data.WORKER_HEARTBEAT_TTL_SECONDS * 1000 > data.WORKER_HEARTBEAT_INTERVAL_MS, {
     message:
@@ -93,6 +123,14 @@ const configSchema = z
     message:
       'MAX_EXECUTION_TIMEOUT_MS must be greater than or equal to DEFAULT_EXECUTION_TIMEOUT_MS',
     path: ['MAX_EXECUTION_TIMEOUT_MS'],
+  })
+  .refine((data) => data.MAX_JOB_ATTEMPTS >= data.DEFAULT_MAX_ATTEMPTS, {
+    message: 'MAX_JOB_ATTEMPTS must be greater than or equal to DEFAULT_MAX_ATTEMPTS',
+    path: ['MAX_JOB_ATTEMPTS'],
+  })
+  .refine((data) => data.MAX_RETRY_BACKOFF_MS >= data.DEFAULT_RETRY_BASE_DELAY_MS, {
+    message: 'MAX_RETRY_BACKOFF_MS must be greater than or equal to DEFAULT_RETRY_BASE_DELAY_MS',
+    path: ['MAX_RETRY_BACKOFF_MS'],
   });
 
 export type RawConfigInput = Record<string, string | undefined>;
@@ -132,6 +170,10 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     MAX_EXECUTION_TIMEOUT_MS,
     MAX_OUTPUT_BYTES,
     DOCKER_HOST,
+    DEFAULT_MAX_ATTEMPTS,
+    MAX_JOB_ATTEMPTS,
+    DEFAULT_RETRY_BASE_DELAY_MS,
+    MAX_RETRY_BACKOFF_MS,
   } = result.data;
 
   return {
@@ -149,5 +191,9 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     maxExecutionTimeoutMs: MAX_EXECUTION_TIMEOUT_MS,
     maxOutputBytes: MAX_OUTPUT_BYTES,
     dockerHost: DOCKER_HOST,
+    defaultMaxAttempts: DEFAULT_MAX_ATTEMPTS,
+    maxJobAttempts: MAX_JOB_ATTEMPTS,
+    defaultRetryBaseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
+    maxRetryBackoffMs: MAX_RETRY_BACKOFF_MS,
   };
 }

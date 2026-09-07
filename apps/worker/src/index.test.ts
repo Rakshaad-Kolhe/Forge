@@ -487,4 +487,236 @@ describe('Worker Service Shell', () => {
     // Lease release should NOT be attempted when ownership was definitively lost
     expect(mockLeaseRepo.release).not.toHaveBeenCalled();
   });
+
+  describe('Worker Retry Attempt Orchestration', () => {
+    it('schedules retry when attempt fails and policy permits further attempts', async () => {
+      const mockLease = {
+        id: 'lease-retry-1',
+        jobId: 'job-retry-1',
+        workerId: 'worker-retry',
+        status: 'ACTIVE' as const,
+        durationMs: 30000,
+        acquiredAt: new Date(),
+        renewedAt: new Date(),
+        expiresAt: new Date(Date.now() + 30000),
+        createdAt: new Date(),
+      };
+
+      const mockLeaseRepo = {
+        claim: vi.fn(),
+        renew: vi.fn(),
+        release: vi.fn().mockResolvedValue({ status: 'RELEASED' }),
+        findActiveByJobId: vi.fn().mockResolvedValue(mockLease),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      const mockJobRepo = {
+        save: vi.fn().mockResolvedValue(undefined),
+        findById: vi.fn(),
+        findByPipelineRunId: vi.fn(),
+      };
+
+      const mockExecutor = {
+        name: 'mock',
+        isAvailable: vi.fn().mockResolvedValue(true),
+        execute: vi.fn().mockResolvedValue({
+          status: 'FAILED',
+          exitCode: 42,
+          failureReason: 'Process exited with code 42',
+          startedAt: new Date(),
+          finishedAt: new Date(),
+          durationMs: 100,
+          stdout: '',
+          stderr: 'Process exited with code 42',
+          truncated: false,
+        }),
+      };
+
+      const worker = startWorker({
+        workerId: 'worker-retry',
+        leaseRepository: mockLeaseRepo,
+        jobRepository: mockJobRepo as unknown as JobRepository,
+        executor: mockExecutor as unknown as Executor,
+      });
+
+      const mockAttempt = {
+        id: 'att-1',
+        attemptNumber: 1,
+        status: 'RUNNING' as 'RUNNING' | 'FAILED',
+        start: vi.fn(),
+        succeed: vi.fn(),
+        fail: vi.fn().mockImplementation(() => {
+          mockAttempt.status = 'FAILED';
+        }),
+        timeout: vi.fn(),
+        cancel: vi.fn(),
+      };
+
+      const mockJob = {
+        id: 'job-retry-1',
+        command: 'exit 42',
+        status: 'QUEUED',
+        retryPolicy: {
+          maxAttempts: 3,
+          backoff: {
+            baseDelayMs: 1000,
+            factor: 2,
+            maxDelayMs: 10000,
+          },
+          retryOn: ['FAILED' as const],
+        },
+        createAttempt: vi.fn().mockReturnValue(mockAttempt),
+        start: vi.fn(),
+        succeed: vi.fn(),
+        fail: vi.fn(),
+        timeout: vi.fn(),
+        cancel: vi.fn(),
+        transitionTo: vi.fn(),
+        setNextAttemptAt: vi.fn(),
+        clearNextAttemptAt: vi.fn(),
+      };
+
+      const execResult = await worker.executeJob({
+        job: mockJob as unknown as Job,
+        leaseId: 'lease-retry-1',
+      });
+
+      expect(execResult.result.status).toBe('FAILED');
+      expect(mockAttempt.fail).toHaveBeenCalledWith(
+        42,
+        'Process exited with code 42',
+        expect.any(String),
+      );
+      expect(execResult.retryDecision).toBeDefined();
+      expect(execResult.retryDecision?.action).toBe('RETRY');
+      if (execResult.retryDecision?.action === 'RETRY') {
+        expect(execResult.retryDecision.nextAttemptNumber).toBe(2);
+        expect(execResult.retryDecision.delayMs).toBe(1000); // 1000 * 2^(1-1)
+      }
+
+      // Verifies state transitions and scheduling
+      expect(mockJob.transitionTo).toHaveBeenCalledWith('QUEUED');
+      expect(mockJob.setNextAttemptAt).toHaveBeenCalledWith(expect.any(Date));
+      expect(mockJob.fail).not.toHaveBeenCalled();
+
+      // Verifies persistence and lease release (fresh lease required per attempt)
+      expect(mockJobRepo.save).toHaveBeenCalledWith(mockJob);
+      expect(mockLeaseRepo.release).toHaveBeenCalledWith({
+        leaseId: 'lease-retry-1',
+        jobId: 'job-retry-1',
+        workerId: 'worker-retry',
+      });
+    });
+
+    it('marks job FAILED permanently when retry policy attempts are exhausted', async () => {
+      const mockLease = {
+        id: 'lease-exhausted-1',
+        jobId: 'job-exhausted-1',
+        workerId: 'worker-retry',
+        status: 'ACTIVE' as const,
+        durationMs: 30000,
+        acquiredAt: new Date(),
+        renewedAt: new Date(),
+        expiresAt: new Date(Date.now() + 30000),
+        createdAt: new Date(),
+      };
+
+      const mockLeaseRepo = {
+        claim: vi.fn(),
+        renew: vi.fn(),
+        release: vi.fn().mockResolvedValue({ status: 'RELEASED' }),
+        findActiveByJobId: vi.fn().mockResolvedValue(mockLease),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      const mockJobRepo = {
+        save: vi.fn().mockResolvedValue(undefined),
+        findById: vi.fn(),
+        findByPipelineRunId: vi.fn(),
+      };
+
+      const mockExecutor = {
+        name: 'mock',
+        isAvailable: vi.fn().mockResolvedValue(true),
+        execute: vi.fn().mockResolvedValue({
+          status: 'FAILED',
+          exitCode: 1,
+          failureReason: 'Process failed',
+          startedAt: new Date(),
+          finishedAt: new Date(),
+          durationMs: 100,
+          stdout: '',
+          stderr: 'error',
+          truncated: false,
+        }),
+      };
+
+      const worker = startWorker({
+        workerId: 'worker-retry',
+        leaseRepository: mockLeaseRepo,
+        jobRepository: mockJobRepo as unknown as JobRepository,
+        executor: mockExecutor as unknown as Executor,
+      });
+
+      // Attempt 3 of 3
+      const mockAttempt = {
+        id: 'att-3',
+        attemptNumber: 3,
+        status: 'RUNNING' as 'RUNNING' | 'FAILED',
+        start: vi.fn(),
+        succeed: vi.fn(),
+        fail: vi.fn().mockImplementation(() => {
+          mockAttempt.status = 'FAILED';
+        }),
+        timeout: vi.fn(),
+        cancel: vi.fn(),
+      };
+
+      const mockJob = {
+        id: 'job-exhausted-1',
+        command: 'exit 1',
+        status: 'QUEUED',
+        retryPolicy: {
+          maxAttempts: 3,
+          backoff: {
+            baseDelayMs: 1000,
+            factor: 2,
+            maxDelayMs: 10000,
+          },
+          retryOn: ['FAILED' as const],
+        },
+        createAttempt: vi.fn().mockReturnValue(mockAttempt),
+        start: vi.fn(),
+        succeed: vi.fn(),
+        fail: vi.fn(),
+        timeout: vi.fn(),
+        cancel: vi.fn(),
+        transitionTo: vi.fn(),
+        setNextAttemptAt: vi.fn(),
+        clearNextAttemptAt: vi.fn(),
+      };
+
+      const execResult = await worker.executeJob({
+        job: mockJob as unknown as Job,
+        leaseId: 'lease-exhausted-1',
+      });
+
+      expect(execResult.result.status).toBe('FAILED');
+      expect(mockAttempt.fail).toHaveBeenCalled();
+      expect(execResult.retryDecision?.action).toBe('FINAL_FAILURE');
+      expect(execResult.retryDecision?.reason).toBe('MAX_ATTEMPTS_EXHAUSTED');
+
+      // Job transitions to terminal FAILED and clears nextAttemptAt
+      expect(mockJob.fail).toHaveBeenCalled();
+      expect(mockJob.clearNextAttemptAt).toHaveBeenCalled();
+      expect(mockJob.transitionTo).not.toHaveBeenCalledWith('QUEUED');
+
+      // Lease is released
+      expect(mockLeaseRepo.release).toHaveBeenCalled();
+    });
+  });
 });

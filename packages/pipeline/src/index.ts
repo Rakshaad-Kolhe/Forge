@@ -10,3 +10,4 @@ export * from './pipeline-run.js';
 export * from './requirements.js';
 export * from './priority.js';
 export * from './matcher.js';
+export * from './retry.js';

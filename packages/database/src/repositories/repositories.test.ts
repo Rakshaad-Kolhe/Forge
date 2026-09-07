@@ -568,6 +568,138 @@ describe('PostgreSQL Repositories Integration Tests', () => {
         ),
       ).rejects.toThrow();
     });
+
+    it('persists and reconstructs job retry policy and next_attempt_at timestamp accurately', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-job-retry',
+        name: 'Retry Pipeline',
+        steps: [
+          {
+            name: 'retry-step',
+            command: 'cargo test',
+            retry: {
+              maxAttempts: 3,
+              backoff: {
+                baseDelayMs: 2000,
+                maxDelayMs: 30000,
+                factor: 2,
+              },
+              retryOn: ['FAILED'],
+            },
+          },
+        ],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-job-retry-1'), pipeline);
+      await pipelineRunRepo.save(run);
+
+      const job = run.getJobs()[0]!;
+      expect(job.retryPolicy).toEqual({
+        maxAttempts: 3,
+        backoff: {
+          baseDelayMs: 2000,
+          maxDelayMs: 30000,
+          factor: 2,
+        },
+        retryOn: ['FAILED'],
+      });
+
+      const nextAttemptTime = new Date(Date.now() + 5000);
+      job.setNextAttemptAt(nextAttemptTime);
+      await jobRepo.save(job);
+
+      const loaded = await jobRepo.findById(job.id);
+      expect(loaded).not.toBeNull();
+      expect(loaded!.retryPolicy).toEqual({
+        maxAttempts: 3,
+        backoff: {
+          baseDelayMs: 2000,
+          maxDelayMs: 30000,
+          factor: 2,
+        },
+        retryOn: ['FAILED'],
+      });
+      expect(loaded!.nextAttemptAt).toBeDefined();
+      expect(Math.abs(loaded!.nextAttemptAt!.getTime() - nextAttemptTime.getTime())).toBeLessThan(
+        1000,
+      );
+    });
+
+    it('allows RUNNING -> QUEUED transition when a retry is scheduled', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-job-retry-transition',
+        name: 'Retry Transition Pipeline',
+        steps: [{ name: 'step', command: 'echo test' }],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-retry-trans'), pipeline);
+      await pipelineRunRepo.save(run);
+
+      const job = run.getJobs()[0]!;
+      job.markQueued();
+      await jobRepo.save(job);
+      job.start();
+      await jobRepo.save(job);
+
+      let loaded = await jobRepo.findById(job.id);
+      expect(loaded!.status).toBe('RUNNING');
+
+      // Schedule retry: transition RUNNING -> QUEUED
+      job.transitionTo('QUEUED');
+      job.setNextAttemptAt(new Date(Date.now() + 2000));
+      await jobRepo.save(job);
+
+      loaded = await jobRepo.findById(job.id);
+      expect(loaded!.status).toBe('QUEUED');
+      expect(loaded!.nextAttemptAt).toBeDefined();
+    });
+
+    it('findSchedulableJobs returns only QUEUED jobs whose next_attempt_at is due or null, ordered by priority DESC', async () => {
+      const pipeline = new Pipeline({
+        id: 'pipe-find-schedulable',
+        name: 'Find Schedulable Pipeline',
+        steps: [
+          { name: 'due-high', command: 'echo 1', priority: 100 },
+          { name: 'due-low', command: 'echo 2', priority: 10 },
+          { name: 'future-blocked', command: 'echo 3', priority: 200 },
+        ],
+      });
+      await pipelineRepo.save(pipeline);
+
+      const run = PipelineRun.create(createPipelineRunId('run-schedulable-test'), pipeline);
+      await pipelineRunRepo.save(run);
+
+      const [dueHigh, dueLow, futureBlocked] = run.getJobs();
+
+      // dueHigh: QUEUED, nextAttemptAt in past
+      dueHigh!.markQueued();
+      dueHigh!.setNextAttemptAt(new Date(Date.now() - 5000));
+      await jobRepo.save(dueHigh!);
+
+      // dueLow: QUEUED, nextAttemptAt is null
+      dueLow!.markQueued();
+      await jobRepo.save(dueLow!);
+
+      // futureBlocked: QUEUED, nextAttemptAt far in future (1 hour)
+      futureBlocked!.markQueued();
+      futureBlocked!.setNextAttemptAt(new Date(Date.now() + 3600000));
+      await jobRepo.save(futureBlocked!);
+
+      const schedulable = await jobRepo.findSchedulableJobs({ now: new Date() });
+      const jobIds = schedulable.map((j) => j.id);
+
+      // Must include dueHigh and dueLow, but NOT futureBlocked
+      expect(jobIds).toContain(dueHigh!.id);
+      expect(jobIds).toContain(dueLow!.id);
+      expect(jobIds).not.toContain(futureBlocked!.id);
+
+      // Verify ordering: dueHigh (priority 100) must appear before dueLow (priority 10)
+      const highIndex = jobIds.indexOf(dueHigh!.id);
+      const lowIndex = jobIds.indexOf(dueLow!.id);
+      expect(highIndex).toBeLessThan(lowIndex);
+    });
   });
 
   describe('PgJobAttemptRepository', () => {

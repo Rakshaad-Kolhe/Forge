@@ -79,3 +79,14 @@ This document establishes the binding architectural invariants for Forge V2. The
 2. **Production logs must be emitted as machine-readable newline-delimited JSON.**
 3. **System logging and telemetry collection must be non-blocking and must never throw unhandled exceptions that disrupt primary application control loops.**
 4. **Failure behavior must be explicitly defined and verifiable before implementation code is committed.**
+
+---
+
+## 8. Retry & Attempt Orchestration
+
+1. **Execution failure $\ne$ Job permanently failed.** A failed execution attempt evaluates the pure `evaluateRetry` function before deciding whether the job transitions to terminal `FAILED` or re-enters `QUEUED` for retry.
+2. **Attempt records (`job_attempts`) are strictly immutable historical facts.** Under no circumstances may an existing attempt record be mutated, overwritten, or re-run to represent a subsequent attempt.
+3. **Attempt numbering is strictly collision-safe.** Guaranteed by the database uniqueness constraint `UNIQUE(job_id, attempt_number)`. Attempt IDs follow deterministic naming: `${job_id}-attempt-${attempt_number}`.
+4. **Fresh worker lease per attempt.** The worker lease from an execution attempt is always released upon attempt completion, regardless of whether a retry is scheduled. Subsequent attempts must acquire a brand new lease, enabling worker hopping.
+5. **Durable backoff persistence.** Retry delays are committed directly to PostgreSQL (`jobs.next_attempt_at`). Backoffs are evaluated against database time (`NOW()`), surviving process and node restarts, never using in-memory sleep loops or `setTimeout`.
+6. **Non-blocking scheduler semantics.** A job currently waiting in active backoff (`next_attempt_at > NOW()`) produces an `UNSCHEDULABLE` decision with reason `RETRY_BACKOFF_ACTIVE` and never blocks other eligible jobs from being evaluated or scheduled.

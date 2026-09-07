@@ -7,6 +7,7 @@ import type {
   Executor,
   ReleaseLeaseResult,
   RenewLeaseResult,
+  RetryDecision,
   WorkerLease,
 } from '@forge/contracts';
 import {
@@ -17,7 +18,7 @@ import {
 } from '@forge/database';
 import { DockerExecutor } from '@forge/executor';
 import { createLogger, type Logger } from '@forge/logging';
-import type { Job, JobAttempt } from '@forge/pipeline';
+import { evaluateRetry, type Job, type JobAttempt } from '@forge/pipeline';
 import {
   type WorkerRegistry,
   type WorkerId,
@@ -56,6 +57,7 @@ export interface ExecuteJobResult {
   readonly result: ExecutionResult;
   readonly attempt: JobAttempt;
   readonly job: Job;
+  readonly retryDecision?: RetryDecision;
 }
 
 export interface WorkerShell {
@@ -335,26 +337,65 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
       activeExecutions.delete(abortController);
     }
 
-    // 5. Apply state machine transitions
+    // 5. Apply state machine transitions and evaluate retry policies
+    let retryDecision: RetryDecision | undefined;
+
     if (ownershipLost) {
       attempt.fail(1, 'Lease ownership lost during execution', new Date().toISOString());
       job.fail();
+      job.clearNextAttemptAt?.();
     } else if (execResult.status === 'SUCCEEDED') {
       attempt.succeed(execResult.exitCode ?? 0, execResult.finishedAt.toISOString());
       job.succeed();
-    } else if (execResult.status === 'TIMED_OUT') {
-      attempt.timeout(execResult.finishedAt.toISOString());
-      job.timeout();
+      job.clearNextAttemptAt?.();
     } else if (execResult.status === 'CANCELLED') {
       attempt.cancel(execResult.finishedAt.toISOString());
       job.cancel();
+      job.clearNextAttemptAt?.();
     } else {
-      attempt.fail(
-        execResult.exitCode ?? 1,
-        execResult.failureReason,
-        execResult.finishedAt.toISOString(),
-      );
-      job.fail();
+      // execResult.status is FAILED or TIMED_OUT
+      if (execResult.status === 'TIMED_OUT') {
+        attempt.timeout(execResult.finishedAt.toISOString());
+      } else {
+        attempt.fail(
+          execResult.exitCode ?? 1,
+          execResult.failureReason,
+          execResult.finishedAt.toISOString(),
+        );
+      }
+
+      // Pure retry decision evaluation
+      retryDecision = evaluateRetry(attempt, job.retryPolicy);
+
+      if (retryDecision.action === 'RETRY') {
+        job.transitionTo('QUEUED');
+        const nextAttemptAt = new Date(Date.now() + retryDecision.delayMs);
+        job.setNextAttemptAt?.(nextAttemptAt);
+
+        logger.info('Job execution failed but retry scheduled', {
+          workerId,
+          jobId: job.id,
+          attemptNumber: attempt.attemptNumber,
+          nextAttemptNumber: retryDecision.nextAttemptNumber,
+          delayMs: retryDecision.delayMs,
+          nextAttemptAt: nextAttemptAt.toISOString(),
+          reason: retryDecision.reason,
+        });
+      } else {
+        if (execResult.status === 'TIMED_OUT') {
+          job.timeout();
+        } else {
+          job.fail();
+        }
+        job.clearNextAttemptAt?.();
+
+        logger.info('Job execution failed permanently; retry policy exhausted or not applicable', {
+          workerId,
+          jobId: job.id,
+          attemptNumber: attempt.attemptNumber,
+          reason: retryDecision.reason,
+        });
+      }
     }
 
     // 6. Transactional persistence
@@ -385,6 +426,7 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
       result: execResult,
       attempt,
       job,
+      retryDecision,
     };
   };
 

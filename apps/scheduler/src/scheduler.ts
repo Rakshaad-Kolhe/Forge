@@ -68,14 +68,29 @@ export function isOperationallyEligible(candidate: WorkerCandidate): boolean {
  */
 export function evaluatePlacement(
   jobOrRequirements:
-    | { readonly id?: string; readonly requirements?: JobRequirements; readonly priority?: number }
+    | {
+        readonly id?: string;
+        readonly requirements?: JobRequirements;
+        readonly priority?: number;
+        readonly nextAttemptAt?: Date | null;
+      }
     | JobRequirements
     | undefined
     | null,
   candidates: readonly WorkerCandidate[],
-  policy: WorkerSelectionPolicy = deterministicFirstEligiblePolicy,
+  policyOrNow?: WorkerSelectionPolicy | Date,
   matcher: EligibilityMatcher = filterEligibleWorkers,
+  now?: Date,
 ): ScheduleDecision {
+  let policy: WorkerSelectionPolicy = deterministicFirstEligiblePolicy;
+  let effectiveNow = now ?? new Date();
+
+  if (policyOrNow instanceof Date) {
+    effectiveNow = policyOrNow;
+  } else if (policyOrNow) {
+    policy = policyOrNow;
+  }
+
   const candidateArray = Array.isArray(candidates) ? candidates : [];
   const candidateWorkerCount = candidateArray.length;
 
@@ -92,7 +107,30 @@ export function evaluatePlacement(
       ? (jobOrRequirements as { priority: number }).priority
       : DEFAULT_JOB_PRIORITY;
 
-  // 1. Resolve and validate job requirements
+  // 1. Check if retry backoff is active
+  if (
+    jobOrRequirements &&
+    typeof jobOrRequirements === 'object' &&
+    'nextAttemptAt' in jobOrRequirements &&
+    jobOrRequirements.nextAttemptAt instanceof Date
+  ) {
+    if (jobOrRequirements.nextAttemptAt > effectiveNow) {
+      const unschedulable: UnschedulableDecision = {
+        status: 'UNSCHEDULABLE',
+        jobId,
+        candidateWorkerCount,
+        eligibleWorkerCount: 0,
+        reason: 'RETRY_BACKOFF_ACTIVE',
+        failureReasons: Object.freeze([
+          `Retry backoff active until ${jobOrRequirements.nextAttemptAt.toISOString()}`,
+        ]),
+        priority,
+      };
+      return unschedulable;
+    }
+  }
+
+  // 2. Resolve and validate job requirements
   const req: JobRequirements | undefined =
     jobOrRequirements && 'requirements' in jobOrRequirements
       ? jobOrRequirements.requirements
@@ -219,9 +257,13 @@ export function evaluatePrioritizedWork(
  */
 export function createJobSourceFromRepository(repository: {
   findById(id: ReturnType<typeof createJobId>): Promise<Job | null>;
+  findSchedulableJobs?(options?: { now?: Date; limit?: number }): Promise<Job[]>;
 }): JobSource {
   return {
     getJob: (jobId: string) => repository.findById(createJobId(jobId)),
+    findSchedulableJobs: repository.findSchedulableJobs
+      ? (options?: { now?: Date; limit?: number }) => repository.findSchedulableJobs!(options)
+      : undefined,
   };
 }
 
@@ -417,6 +459,48 @@ export class ForgeScheduler implements Scheduler {
     });
 
     return result;
+  }
+
+  /**
+   * Discovers and evaluates placement for all currently due schedulable jobs from the JobSource.
+   */
+  public async scheduleDueJobs(options?: {
+    now?: Date;
+    limit?: number;
+  }): Promise<PrioritizedScheduleResult & { processedCount: number; scheduledCount: number }> {
+    if (!this.jobSource) {
+      throw new JobSourceError('JobSource is required to schedule due jobs');
+    }
+    if (!this.jobSource.findSchedulableJobs) {
+      throw new JobSourceError('JobSource does not support findSchedulableJobs');
+    }
+
+    let dueJobs: Job[];
+    try {
+      dueJobs = await this.jobSource.findSchedulableJobs(options);
+    } catch (err) {
+      throw new JobSourceError(
+        `Failed to find schedulable jobs: ${(err as Error).message}`,
+        err as Error,
+      );
+    }
+
+    if (dueJobs.length === 0) {
+      return {
+        orderedDecisions: Object.freeze([]),
+        scheduledDecisions: Object.freeze([]),
+        unschedulableDecisions: Object.freeze([]),
+        processedCount: 0,
+        scheduledCount: 0,
+      };
+    }
+
+    const result = await this.schedulePrioritized(dueJobs);
+    return {
+      ...result,
+      processedCount: result.orderedDecisions.length,
+      scheduledCount: result.scheduledDecisions.length,
+    };
   }
 
   /**
