@@ -128,7 +128,7 @@ export function createPipelineRunStateMachine(
 const JOB_TRANSITIONS: Record<JobStatus, readonly JobStatus[]> = {
   PENDING: ['QUEUED', 'CANCELLED'],
   QUEUED: ['RUNNING', 'CANCELLED'],
-  RUNNING: ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT'],
+  RUNNING: ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'QUEUED'],
   SUCCEEDED: [],
   FAILED: [],
   CANCELLED: [],

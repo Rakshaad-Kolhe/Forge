@@ -65,6 +65,8 @@ export interface JobRow {
   depends_on: unknown;
   requirements?: unknown;
   priority?: number;
+  retry_policy?: unknown;
+  next_attempt_at?: Date | null;
   status: string;
   created_at: Date;
 }

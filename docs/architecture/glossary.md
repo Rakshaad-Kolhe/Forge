@@ -135,3 +135,27 @@ A unique, isolated temporary filesystem directory created per execution attempt 
 ### Non-Root Execution
 
 The security requirement and runtime enforcement ensuring that containerized user processes run as an unprivileged user (`--user 1000:1000` by default) rather than privileged root inside the container.
+
+### Retry Policy
+
+A declarative specification attached to a pipeline step or job dictating maximum execution attempts (`maxAttempts`), backoff parameters (`backoff`), and eligible failure conditions (`retryOn`).
+
+### Backoff Policy
+
+The algorithm and bounding parameters governing the delay duration between consecutive retry attempts (e.g., `EXPONENTIAL` with `baseDelayMs`, `factor`, and `maxDelayMs`).
+
+### Retry Decision
+
+The typed, explainable outcome returned by the pure `evaluateRetry` function detailing whether another attempt should occur (`RETRY`, `FINAL_FAILURE`, or `NOT_RETRYABLE`), the next attempt number, and the calculated backoff delay in milliseconds.
+
+### nextAttemptAt
+
+A durable timestamp column on the `jobs` table representing the earliest database server time at which a queued retry job becomes eligible for scheduler placement and candidate worker selection.
+
+### Attempt Immutability
+
+The distributed auditability guarantee that historical `JobAttempt` records are write-once and never modified, overwritten, or re-run to represent subsequent physical executions.
+
+### Worker Hopping
+
+The distributed systems capability whereby sequential attempts of the same job can be claimed and executed by different worker nodes due to per-attempt lease isolation.

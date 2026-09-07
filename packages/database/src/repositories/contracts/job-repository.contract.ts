@@ -20,4 +20,10 @@ export interface JobRepository {
    * Finds all jobs for a given pipeline run ordered by creation.
    */
   findByPipelineRunId(pipelineRunId: PipelineRunId): Promise<Job[]>;
+
+  /**
+   * Finds jobs in QUEUED status whose retry backoff (if any) has matured (next_attempt_at IS NULL OR next_attempt_at <= now).
+   * Ordered by priority descending, then creation time ascending.
+   */
+  findSchedulableJobs(options?: { now?: Date; limit?: number }): Promise<Job[]>;
 }

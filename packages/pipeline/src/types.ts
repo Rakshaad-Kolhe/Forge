@@ -43,7 +43,7 @@ export type JobStatus =
 export type JobAttemptStatus =
   'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'TIMED_OUT';
 
-import type { JobRequirements } from '@forge/contracts';
+import type { JobRequirements, RetryPolicy } from '@forge/contracts';
 
 /**
  * Plain object definition schemas for authoring pipelines.
@@ -54,6 +54,7 @@ export interface StepDefinition {
   dependsOn?: string[];
   requirements?: JobRequirements;
   priority?: number;
+  retry?: RetryPolicy;
 }
 
 export interface PipelineDefinition {
@@ -71,6 +72,7 @@ export interface PipelineStepSerialized {
   dependsOn: string[];
   requirements?: JobRequirements;
   priority: number;
+  retry?: RetryPolicy;
 }
 
 export interface PipelineSerialized {
@@ -98,6 +100,8 @@ export interface JobSerialized {
   dependsOn: string[];
   requirements?: JobRequirements;
   priority: number;
+  retryPolicy?: RetryPolicy;
+  nextAttemptAt?: string;
   status: JobStatus;
   attempts: JobAttemptSerialized[];
 }

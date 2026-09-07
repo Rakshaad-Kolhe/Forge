@@ -135,6 +135,16 @@ CREATE INDEX IF NOT EXISTS idx_worker_leases_status ON worker_leases(status);
 CREATE INDEX IF NOT EXISTS idx_worker_leases_expires_at ON worker_leases(expires_at);
 `;
 
+export const JOB_RETRIES_SQL = `-- Forge V2: PR 14 - Job Retry Policy and Backoff Scheduling
+ALTER TABLE jobs
+ADD COLUMN IF NOT EXISTS retry_policy JSONB,
+ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_retry_schedulable
+ON jobs(status, next_attempt_at, priority DESC)
+WHERE status = 'QUEUED';
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     name: '001_initial_schema',
@@ -155,6 +165,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     name: '005_worker_leases',
     sql: WORKER_LEASES_SQL,
+  },
+  {
+    name: '006_job_retries',
+    sql: JOB_RETRIES_SQL,
   },
 ]);
 

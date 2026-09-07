@@ -60,6 +60,10 @@ export interface AppConfig {
   maxExecutionTimeoutMs: number;
   maxOutputBytes: number;
   dockerHost?: string;
+  defaultMaxAttempts: number;
+  maxJobAttempts: number;
+  defaultRetryBaseDelayMs: number;
+  maxRetryBackoffMs: number;
 }
 
 /**
@@ -215,7 +219,7 @@ export type ScheduleDecisionStatus = 'SCHEDULED' | 'UNSCHEDULABLE';
  * Standard reasons explaining why a job cannot be scheduled on any worker.
  */
 export type UnschedulableReason =
-  'NO_ELIGIBLE_WORKER' | 'INVALID_JOB_REQUIREMENTS' | 'LEASE_CONFLICT';
+  'NO_ELIGIBLE_WORKER' | 'INVALID_JOB_REQUIREMENTS' | 'LEASE_CONFLICT' | 'RETRY_BACKOFF_ACTIVE';
 
 /**
  * Explainable result when a job is successfully matched and assigned to a worker.
@@ -294,3 +298,65 @@ export interface Executor {
   execute(context: ExecutionContext): Promise<ExecutionResult>;
   isAvailable(): Promise<boolean>;
 }
+
+/**
+ * Outcomes that can trigger a retry.
+ */
+export type RetryCondition = 'FAILED' | 'TIMED_OUT';
+
+/**
+ * Exponential backoff configuration.
+ */
+export interface BackoffPolicy {
+  readonly baseDelayMs: number;
+  readonly maxDelayMs: number;
+  readonly factor?: number;
+}
+
+/**
+ * Declarative retry configuration for a job or step.
+ */
+export interface RetryPolicy {
+  /**
+   * Maximum total execution attempts including the initial attempt (>= 1).
+   */
+  readonly maxAttempts: number;
+  /**
+   * Backoff policy for delay between attempts.
+   */
+  readonly backoff?: BackoffPolicy;
+  /**
+   * Execution outcomes that trigger a retry attempt. Defaults to ['FAILED', 'TIMED_OUT'].
+   */
+  readonly retryOn?: readonly RetryCondition[];
+}
+
+/**
+ * Pure evaluation decision produced when assessing retryability for a completed attempt.
+ */
+export type RetryDecision =
+  | {
+      readonly action: 'RETRY';
+      readonly attemptNumber: number;
+      readonly nextAttemptNumber: number;
+      readonly delayMs: number;
+      readonly reason: string;
+    }
+  | {
+      readonly action: 'FINAL_FAILURE';
+      readonly attemptNumber: number;
+      readonly reason: 'MAX_ATTEMPTS_EXHAUSTED' | 'OUTCOME_NOT_RETRYABLE';
+      readonly details: string;
+    }
+  | {
+      readonly action: 'NOT_RETRYABLE';
+      readonly attemptNumber: number;
+      readonly reason: 'NO_POLICY' | 'SUCCEEDED' | 'CANCELLED';
+      readonly details: string;
+    };
+
+export const DEFAULT_MAX_ATTEMPTS = 1;
+export const MAX_JOB_ATTEMPTS_LIMIT = 10;
+export const DEFAULT_RETRY_BASE_DELAY_MS = 1000;
+export const DEFAULT_MAX_BACKOFF_MS = 60000;
+export const MAX_RETRY_BACKOFF_LIMIT_MS = 3600000;

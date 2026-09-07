@@ -19,6 +19,10 @@ describe('loadConfig', () => {
       maxExecutionTimeoutMs: 1800000,
       maxOutputBytes: 1048576,
       dockerHost: undefined,
+      defaultMaxAttempts: 1,
+      maxJobAttempts: 10,
+      defaultRetryBaseDelayMs: 1000,
+      maxRetryBackoffMs: 3600000,
     });
   });
 
@@ -38,6 +42,10 @@ describe('loadConfig', () => {
       MAX_EXECUTION_TIMEOUT_MS: '600000',
       MAX_OUTPUT_BYTES: '2097152',
       DOCKER_HOST: 'tcp://127.0.0.1:2375',
+      DEFAULT_MAX_ATTEMPTS: '3',
+      MAX_JOB_ATTEMPTS: '20',
+      DEFAULT_RETRY_BASE_DELAY_MS: '2000',
+      MAX_RETRY_BACKOFF_MS: '1800000',
     });
     expect(config).toEqual({
       nodeEnv: 'production',
@@ -54,6 +62,10 @@ describe('loadConfig', () => {
       maxExecutionTimeoutMs: 600000,
       maxOutputBytes: 2097152,
       dockerHost: 'tcp://127.0.0.1:2375',
+      defaultMaxAttempts: 3,
+      maxJobAttempts: 20,
+      defaultRetryBaseDelayMs: 2000,
+      maxRetryBackoffMs: 1800000,
     });
   });
 
@@ -118,6 +130,24 @@ describe('loadConfig', () => {
       loadConfig({
         DEFAULT_EXECUTION_TIMEOUT_MS: '120000',
         MAX_EXECUTION_TIMEOUT_MS: '60000', // 60s < 120s
+      });
+    }).toThrow(ConfigValidationError);
+  });
+
+  it('fails clearly when MAX_JOB_ATTEMPTS is less than DEFAULT_MAX_ATTEMPTS', () => {
+    expect(() => {
+      loadConfig({
+        DEFAULT_MAX_ATTEMPTS: '5',
+        MAX_JOB_ATTEMPTS: '2',
+      });
+    }).toThrow(ConfigValidationError);
+  });
+
+  it('fails clearly when MAX_RETRY_BACKOFF_MS is less than DEFAULT_RETRY_BASE_DELAY_MS', () => {
+    expect(() => {
+      loadConfig({
+        DEFAULT_RETRY_BASE_DELAY_MS: '5000',
+        MAX_RETRY_BACKOFF_MS: '2000',
       });
     }).toThrow(ConfigValidationError);
   });

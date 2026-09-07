@@ -138,3 +138,12 @@ export class InvalidJobPriorityError extends PipelineValidationError {
     super(message, issues);
   }
 }
+
+/**
+ * Thrown when retry policy configuration validation fails.
+ */
+export class RetryPolicyValidationError extends PipelineValidationError {
+  constructor(message: string, issues: readonly string[] = []) {
+    super(message, issues);
+  }
+}
