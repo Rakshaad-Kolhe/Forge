@@ -63,6 +63,7 @@ export interface JobRow {
   step_name: string;
   command: string;
   depends_on: unknown;
+  requirements?: unknown;
   status: string;
   created_at: Date;
 }

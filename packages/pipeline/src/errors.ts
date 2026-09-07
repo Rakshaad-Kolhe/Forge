@@ -120,3 +120,12 @@ export class DuplicateJobError extends PipelineDomainError {
     this.pipelineRunId = pipelineRunId;
   }
 }
+
+/**
+ * Thrown when job execution requirements validation fails.
+ */
+export class JobRequirementsValidationError extends PipelineValidationError {
+  constructor(message: string, issues: readonly string[] = []) {
+    super(message, issues);
+  }
+}

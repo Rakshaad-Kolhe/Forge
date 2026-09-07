@@ -54,3 +54,29 @@ export interface AppConfig {
   workerHeartbeatIntervalMs: number;
   workerHeartbeatTtlSeconds: number;
 }
+
+/**
+ * Worker execution capabilities advertised to the cluster.
+ */
+export interface WorkerCapabilities {
+  readonly executors: readonly string[];
+}
+
+/**
+ * Hardware capacity and execution resource limits of the worker node.
+ */
+export interface WorkerResources {
+  readonly cpuCores: number;
+  readonly memoryBytes: number;
+  readonly gpuCount?: number;
+}
+
+/**
+ * Declared execution requirements for running a job.
+ */
+export interface JobRequirements {
+  readonly executor?: string;
+  readonly cpuCores?: number;
+  readonly memoryBytes?: number;
+  readonly gpuCount?: number;
+}

@@ -47,16 +47,26 @@ export class PgJobRepository implements JobRepository {
     }
 
     const dependsOnJson = JSON.stringify([...job.dependsOn]);
+    const requirementsJson = JSON.stringify(job.requirements ?? {});
 
     try {
       await this.client.query(
         `
-        INSERT INTO jobs (id, pipeline_run_id, step_name, command, depends_on, status, created_at)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW())
+        INSERT INTO jobs (id, pipeline_run_id, step_name, command, depends_on, requirements, status, created_at)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, NOW())
         ON CONFLICT (id) DO UPDATE
-        SET status = EXCLUDED.status;
+        SET status = EXCLUDED.status,
+            requirements = EXCLUDED.requirements;
       `,
-        [job.id, job.pipelineRunId, job.stepName, job.command, dependsOnJson, job.status],
+        [
+          job.id,
+          job.pipelineRunId,
+          job.stepName,
+          job.command,
+          dependsOnJson,
+          requirementsJson,
+          job.status,
+        ],
       );
 
       // Persist any constituent attempts
@@ -97,7 +107,7 @@ export class PgJobRepository implements JobRepository {
     try {
       const res = await this.client.query<JobRow>(
         `
-        SELECT id, pipeline_run_id, step_name, command, depends_on, status, created_at
+        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, status, created_at
         FROM jobs
         WHERE id = $1;
       `,
@@ -125,7 +135,7 @@ export class PgJobRepository implements JobRepository {
     try {
       const res = await this.client.query<JobRow>(
         `
-        SELECT id, pipeline_run_id, step_name, command, depends_on, status, created_at
+        SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, status, created_at
         FROM jobs
         WHERE pipeline_run_id = $1
         ORDER BY created_at ASC;
@@ -165,12 +175,19 @@ export class PgJobRepository implements JobRepository {
         typeof row.depends_on === 'string' ? JSON.parse(row.depends_on) : row.depends_on
       ) as string[];
 
+      const requirements = row.requirements
+        ? typeof row.requirements === 'string'
+          ? JSON.parse(row.requirements)
+          : row.requirements
+        : undefined;
+
       return new Job({
         id: createJobId(row.id),
         pipelineRunId: createPipelineRunId(row.pipeline_run_id),
         stepName: row.step_name,
         command: row.command,
         dependsOn,
+        requirements,
         initialStatus: row.status as JobStatus,
         attempts,
       });

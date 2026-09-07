@@ -91,6 +91,11 @@ CREATE INDEX IF NOT EXISTS idx_workers_status ON workers(status);
 CREATE INDEX IF NOT EXISTS idx_workers_registered_at ON workers(registered_at);
 `;
 
+export const JOB_REQUIREMENTS_SQL = `-- Forge V2: PR 09 - Job Execution Requirements
+ALTER TABLE jobs
+ADD COLUMN IF NOT EXISTS requirements JSONB NOT NULL DEFAULT '{}'::jsonb;
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     name: '001_initial_schema',
@@ -99,6 +104,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     name: '002_worker_registry',
     sql: WORKER_REGISTRY_SQL,
+  },
+  {
+    name: '003_job_requirements',
+    sql: JOB_REQUIREMENTS_SQL,
   },
 ]);
 

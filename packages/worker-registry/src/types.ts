@@ -27,21 +27,8 @@ export function createWorkerId(id: string): WorkerId {
  */
 export type WorkerStatus = 'STARTING' | 'READY' | 'DRAINING' | 'OFFLINE';
 
-/**
- * Worker execution capabilities advertised to the cluster.
- */
-export interface WorkerCapabilities {
-  readonly executors: readonly string[];
-}
-
-/**
- * Hardware capacity and execution resource limits of the worker node.
- */
-export interface WorkerResources {
-  readonly cpuCores: number;
-  readonly memoryBytes: number;
-  readonly gpuCount?: number;
-}
+import type { WorkerCapabilities, WorkerResources } from '@forge/contracts';
+export type { WorkerCapabilities, WorkerResources } from '@forge/contracts';
 
 /**
  * Full durable worker record shape persisted in PostgreSQL.

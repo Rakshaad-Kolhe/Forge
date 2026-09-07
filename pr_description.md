@@ -1,96 +1,136 @@
-# PR 08: Worker Registration & Heartbeat
+# PR 09: Worker Capability & Resource Matching
 
 ## Summary
 
-This pull request implements **PR 08: Worker Registration & Heartbeat** of Forge V2, establishing the worker-side distributed infrastructure for worker identity, durable metadata registration in PostgreSQL, transient liveness coordination in Redis with atomic TTL expiration, crash/stale detection, and graceful lifecycle management.
+This pull request implements **PR 09: Worker Capability & Resource Matching** of Forge V2. It establishes the **placement eligibility layer** that deterministically evaluates whether candidate worker nodes possess the capabilities and hardware capacity required to execute a job based on:
 
-In accordance with **ADR-002 (PostgreSQL as Authoritative Source of Truth)** and **ADR-003 (Redis for Transient Distributed Coordination)**, worker coordination is strictly decoupled between durable capability persistence and high-frequency liveness checks.
+1. **Executor capability** (e.g. `shell`, `docker`, `kubernetes`).
+2. **CPU core capacity** (`cpuCores`).
+3. **Memory capacity** (`memoryBytes`).
+4. **Dedicated GPU capacity** (`gpuCount`).
+
+This PR provides pure, deterministic, explainable matching logic (`matchesWorker` and `filterEligibleWorkers`), propagates job execution requirements across the domain layer, and persists requirements durably in PostgreSQL.
 
 ---
 
-## Architectural Separation
+## Architectural Context
+
+Forge V2 defines the scheduler progression as:
 
 ```text
-┌───────────────────────────────────────────────────────────────────┐
-│                       Distributed Workers                         │
-└────────┬──────────────────────────────────────────────────┬───────┘
-         │ 1. Registration / Deregistration                 │ 2. High-Frequency Heartbeat
-         │    (Infrequent: boot, drain, shutdown)           │    (Periodic: 5-15s, lightweight)
-         ▼                                                  ▼
-┌───────────────────────────────┐                  ┌───────────────────────────────┐
-│          PostgreSQL           │                  │             Redis             │
-│   (Authoritative Registry)    │                  │      (Transient Liveness)     │
-├───────────────────────────────┤                  ├───────────────────────────────┤
-│ • Table: `workers`            │                  │ • Key: `forge:worker:{id}:hb` │
-│ • Durable identity (workerId) │                  │ • Expiring string (TTL 15s)   │
-│ • Hardware resources & specs  │                  │ • Zero database I/O on tick   │
-│ • Executor capabilities       │                  │ • Auto-expires on crash       │
-│ • Preserved indefinitely      │                  │ • Ephemeral state only        │
-└───────────────────────────────┘                  └───────────────────────────────┘
+1. Correct FIFO queue (PR 07)
+2. Worker registration and heartbeat (PR 08)
+3. Capability/resource matching (PR 09 - Current)
+4. Priority scheduling (PR 10)
+5. Fairness and starvation prevention (PR 11)
+6. Scheduler benchmarking (PR 12)
+```
+
+In PR 09, Forge introduces the **eligibility filter** that narrows down registered workers to a compatible candidate set:
+
+```text
+                 Job
+                  │ (declared requirements)
+                  ▼
+        ┌──────────────────┐
+        │ Capability Match │
+        │    + Capacity    │
+        │   Compatibility  │
+        └────────┬─────────┘
+                 │
+           eligible workers
+                 │
+                 ▼
+          Future Scheduler
+                 │
+        ┌────────┴────────┐
+        ▼                 ▼
+     Priority          Fairness
+       PR 10             PR 11
 ```
 
 ---
 
 ## What Was Implemented
 
-### 1. Database Persistence Layer (`packages/database`)
+### 1. Canonical Contracts (`packages/contracts`)
 
-- **Migration `002_worker_registry.sql`**:
-  - Adds the `workers` table with `id`, `status`, `hostname`, `executors` (JSONB), `resources` (JSONB), `registered_at`, and `updated_at`.
-  - Enforces `chk_workers_status CHECK (status IN ('STARTING', 'READY', 'DRAINING', 'OFFLINE'))`.
-  - Registered in `migrator.ts` both in `MIGRATIONS` and `resetDatabase`.
-- **`WorkerRepository` Contract & `PgWorkerRepository` Implementation**:
-  - Typed interface for `save`, `findById`, `list`, `updateStatus`, and `delete`.
-  - Implements idempotent upsert via `ON CONFLICT (id) DO UPDATE`.
-  - Preserves historical records; stale workers are never deleted.
+- Defined canonical shared interfaces in `@forge/contracts`:
+  - `WorkerCapabilities`: `{ readonly executors: readonly string[]; }`
+  - `WorkerResources`: `{ readonly cpuCores: number; readonly memoryBytes: number; readonly gpuCount?: number; }`
+  - `JobRequirements`: `{ readonly executor?: string; readonly cpuCores?: number; readonly memoryBytes?: number; readonly gpuCount?: number; }`
 
-### 2. Configuration & Contracts (`packages/contracts`, `@forge/config`, `.env.example`)
+### 2. Domain Representation & Pure Matcher (`packages/pipeline`)
 
-- Added `workerHeartbeatIntervalMs` (default: 5000ms) and `workerHeartbeatTtlSeconds` (default: 15s).
-- Zod schema validation ensuring `(workerHeartbeatTtlSeconds * 1000) > workerHeartbeatIntervalMs`.
-- Documented in `.env.example`.
+- **Requirements Model ([packages/pipeline/src/requirements.ts](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/pipeline/src/requirements.ts))**:
+  - `validateJobRequirements(input)`: Validates and normalizes requirements; throws `JobRequirementsValidationError` on invalid inputs (negative values, non-finite numbers, empty executor strings).
+  - `checkJobRequirementsValidity(input)`: Non-throwing verification helper.
+- **Pure Matcher & Multi-Worker Filter ([packages/pipeline/src/matcher.ts](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/pipeline/src/matcher.ts))**:
+  - `matchesWorker(jobOrRequirements, worker)`:
+    - Pure, deterministic, side-effect-free matching predicate.
+    - Independent of PostgreSQL, Redis, Docker, and queue mechanics.
+    - Produces explainable `WorkerMatchResult` containing all applicable `MatchFailureReason` flags:
+      - `EXECUTOR_UNSUPPORTED`
+      - `INSUFFICIENT_CPU`
+      - `INSUFFICIENT_MEMORY`
+      - `INSUFFICIENT_GPU`
+      - `INVALID_REQUIREMENTS`
+  - `filterEligibleWorkers(jobOrRequirements, workers)`:
+    - Filters candidate worker arrays while strictly preserving deterministic input ordering.
+  - `WorkerCandidate` Polymorphism:
+    - Seamlessly matches against `WorkerMetadata`, `WorkerInfo`, `WorkerRecord`, or plain `{ capabilities, resources }` target objects without manual transformations.
+- **Domain Integration ([job.ts](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/pipeline/src/job.ts), [pipeline-step.ts](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/pipeline/src/pipeline-step.ts), [pipeline-run.ts](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/pipeline/src/pipeline-run.ts))**:
+  - `PipelineStep` accepts and validates `requirements`.
+  - `Job` encapsulates `requirements`.
+  - `PipelineRun.create(id, pipeline)` deterministically propagates `step.requirements` to each instantiated `Job`.
 
-### 3. Worker Registry Infrastructure (`packages/worker-registry`)
+### 3. PostgreSQL Persistence Foundation (`packages/database`)
 
-- **Worker Types (`src/types.ts`)**:
-  - Branded `WorkerId` with `createWorkerId()` validator.
-  - Lifecycle statuses: `STARTING`, `READY`, `DRAINING`, `OFFLINE`.
-  - Liveness states: `ALIVE`, `STALE`.
-  - Hardware capacity: `WorkerResources` (`cpuCores`, `memoryBytes`, optional `gpuCount`).
-  - Execution capabilities: `WorkerCapabilities` (`executors`).
-  - Ephemeral heartbeat: `WorkerHeartbeat` payload.
-  - Unified view: `WorkerInfo` combining PostgreSQL metadata with Redis real-time liveness.
-- **Heartbeat Store (`src/heartbeat.ts`)**:
-  - Manages `forge:worker:{workerId}:heartbeat` keys using Redis `setJson(key, payload, { ttlSeconds })`.
-  - High-frequency heartbeat renewals write exclusively to Redis with atomic TTL (`SET ... EX`).
-  - Zero database queries generated during normal heartbeat ticks.
-- **Worker Registry Coordinator (`src/registry.ts`)**:
-  - Coordinates PostgreSQL durable writes and Redis transient keys.
-  - `register()`: Idempotent upsert in PostgreSQL + initial Redis heartbeat key.
-  - `heartbeat()`: Fast-path TTL renewal in Redis.
-  - `deregister()`: Deletes Redis heartbeat key immediately and transitions PostgreSQL status to `OFFLINE`.
-  - `getWorker()`: Composes PostgreSQL row with Redis liveness.
-  - `listWorkers()`: Supports filtering by lifecycle status and liveness (`ALIVE` / `STALE`).
+- **Migration `003_job_requirements.sql`**:
+  - Adds `requirements JSONB NOT NULL DEFAULT '{}'::jsonb` to the `jobs` table.
+  - Registered in `migrator.ts` in `MIGRATIONS` and `resetDatabase`.
+- **`PgJobRepository` Persistence**:
+  - Saves `job.requirements` as JSONB during `jobRepo.save(job)`.
+  - Selects and reconstructs `job.requirements` during `findById(jobId)` and `findByPipelineRunId(pipelineRunId)`.
 
-### 4. Worker Service Shell Integration (`apps/worker`)
+### 4. Worker Registry Alignment (`packages/worker-registry`)
 
-- Inspects system compute capacity (`os.cpus().length`, `os.totalmem()`, `os.hostname()`).
-- Automated registration on startup.
-- Unref'd background periodic timer renewing heartbeat.
-- Graceful deregistration and cleanup on `shell.stop()`, `SIGTERM`, and `SIGINT`.
+- Re-exports `WorkerCapabilities` and `WorkerResources` from `@forge/contracts` to guarantee full backwards compatibility without code duplication.
 
-### 5. Architectural Documentation (`docs/architecture/workers.md`)
+### 5. Architectural Documentation (`docs/architecture/resource-matching.md`)
 
-- Complete architectural specification detailing durable vs. transient roles, state machines, crash semantics, and non-guarantees.
+- Complete architectural specification detailing:
+  - Models: Job requirements vs. worker capabilities.
+  - Matching semantics and rules.
+  - Invalid input handling and invariant preservation.
+  - Explainable failure taxonomy.
+  - Critical distinction between capacity compatibility and live availability.
+  - Non-guarantees and architectural boundaries.
 - Updated `docs/architecture/overview.md` and `README.md`.
 
 ---
 
-## Architectural Invariants & Non-Guarantees (PR 08 Scope Boundary)
+## Matching Semantics & Rules
 
-- **Heartbeat is NOT a Lease**: A worker heartbeat indicates node liveness. It does not grant or extend ownership of any specific job or pipeline.
-- **No Job Claiming or Worker Dispatch**: Workers do NOT dequeue jobs or execute tasks in this PR. Scheduler-driven dispatch and container runners remain planned for subsequent PRs.
-- **Stale Workers are Never Deleted**: Crashed or disconnected workers remain in PostgreSQL for auditability and post-mortem analysis.
+| Resource     | Rule                                      | Failure Reason         |
+| :----------- | :---------------------------------------- | :--------------------- |
+| **Executor** | `worker.executors.includes(job.executor)` | `EXECUTOR_UNSUPPORTED` |
+| **CPU**      | `worker.cpuCores >= job.cpuCores`         | `INSUFFICIENT_CPU`     |
+| **Memory**   | `worker.memoryBytes >= job.memoryBytes`   | `INSUFFICIENT_MEMORY`  |
+| **GPU**      | `(worker.gpuCount ?? 0) >= job.gpuCount`  | `INSUFFICIENT_GPU`     |
+
+- **Unspecified Requirements**: Any unspecified (`undefined`) requirement is unconstrained and passes.
+- **Zero GPU**: `gpuCount: 0` or undefined matches workers with 0 or more GPUs.
+- **Invalid Requirements**: Requirements with negative numbers, non-finite values (`NaN`, `Infinity`), or empty executor strings return `matched: false` with reason `INVALID_REQUIREMENTS` and are excluded from eligible worker lists.
+
+---
+
+## Critical Distinction: Capacity Compatibility vs. Live Availability
+
+This PR establishes **capacity compatibility**, NOT **live resource allocation**:
+
+- Capacity compatibility answers: _"Does this worker have the hardware specifications to run this job?"_
+- Active resource counters, in-flight job concurrency subtraction, and slot reservation will be implemented in future scheduler and lease PRs.
 
 ---
 
@@ -98,26 +138,23 @@ In accordance with **ADR-002 (PostgreSQL as Authoritative Source of Truth)** and
 
 ### Automated Test Suites
 
-1. **Config Tests** (`packages/config`):
-   - Validates interval, TTL, and relationship constraints (`(TTL * 1000) > interval`).
-2. **Database Integration Tests** (`packages/database`):
-   - All 30 tests pass, including migration application and rollback.
-3. **Worker Registry Unit Tests** (`packages/worker-registry`):
-   - 10 unit tests verifying ID branding, input validation, and heartbeat key naming.
-4. **Worker Registry Real Integration Tests** (`packages/worker-registry`):
-   - 7 integration tests against live PostgreSQL and Redis instances:
-     - Worker registration and durable persistence.
-     - Idempotent repeated registration.
-     - Heartbeat TTL renewal without PostgreSQL writes.
-     - Crash simulation and TTL expiry (STALE detection with preserved DB record).
-     - Worker reconnection and revival.
-     - Graceful deregistration (status OFFLINE, Redis key deleted).
-     - Concurrent worker isolation and multi-worker filtering.
-5. **Worker Service Shell Tests** (`apps/worker`):
-   - Standalone startup and stop.
-   - Registry coordination, background timer, and graceful shutdown.
-6. **Full Monorepo Verification**:
-   - `npm run typecheck`: Strict TypeScript compiler checks across all workspaces pass cleanly.
-   - `npm run lint`: All ESLint checks pass.
-   - `npm run format:check`: Formatting clean.
-   - `npm run build`: Production build of all packages and applications succeeds.
+1. **Matcher Unit Tests** (`packages/pipeline/src/matcher.test.ts`):
+   - 40 unit tests covering executor matching, CPU capacity, memory capacity, GPU counts, combined requirements, multi-worker filtering, invalid input safety, and determinism.
+2. **Database Integration Tests** (`packages/database/src/repositories/repositories.test.ts`):
+   - Real PostgreSQL integration test verifying that `job.requirements` are persisted and reconstructed with exact fidelity via `save`, `findById`, and `findByPipelineRunId`.
+3. **Monorepo Quality Gates**:
+   - `npm run format:check`: Passed.
+   - `npm run lint`: Passed (0 errors, 0 warnings).
+   - `npm run typecheck`: Passed (`tsc -b` passed with 0 errors).
+   - `npm test`: Passed (23 test files, 216 tests passed).
+   - `npm run build`: Passed (all packages and applications compiled cleanly).
+
+### Manual Verification Smoke Test
+
+Verified deterministic placement against Section 25 test matrix:
+
+- **Worker A**: `[shell, docker]`, 4 CPU, 8 GB, 0 GPU
+- **Worker B**: `[shell]`, 8 CPU, 16 GB, 0 GPU
+- **Worker C**: `[docker]`, 2 CPU, 4 GB, 1 GPU
+- **Job 1** (`docker`, 4 CPU, 8 GB, 0 GPU) -> Eligible: `[Worker A]` (B lacks docker; C has insufficient CPU/RAM).
+- **Job 2** (`docker`, 2 CPU, 4 GB, 1 GPU) -> Eligible: `[Worker C]` (A and B lack GPU; B lacks docker).
