@@ -115,3 +115,23 @@ The condition where a worker attempts to claim or schedule a job that is already
 ### Reclaim Expired Leases
 
 A background or reactive sweep operation that scans the PostgreSQL database for leases with `status = 'ACTIVE'` and `expires_at <= NOW()` and transitions their status to `'EXPIRED'`.
+
+### DockerExecutor
+
+The production-oriented container execution implementation of `Executor` (`@forge/executor`) that executes claimed jobs inside isolated, disposable non-root containers using the Docker engine.
+
+### Execution Context
+
+The typed specification passed to an Executor detailing the target command, container image, environment variables, CPU/memory constraints, and abort signals for a specific job attempt.
+
+### Execution Result
+
+The structured outcome returned by an Executor upon attempt completion, encapsulating execution status (`SUCCEEDED`, `FAILED`, `TIMED_OUT`, `CANCELLED`), exit code, duration, timestamps, and bounded stdout/stderr output.
+
+### Ephemeral Workspace
+
+A unique, isolated temporary filesystem directory created per execution attempt on the worker host, bind-mounted into the container at `/workspace`, and guaranteed to be destroyed upon attempt completion.
+
+### Non-Root Execution
+
+The security requirement and runtime enforcement ensuring that containerized user processes run as an unprivileged user (`--user 1000:1000` by default) rather than privileged root inside the container.

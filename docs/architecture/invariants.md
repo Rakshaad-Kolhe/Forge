@@ -45,6 +45,10 @@ This document establishes the binding architectural invariants for Forge V2. The
 3. **Execution environments (containers or pods) must be strictly ephemeral and disposable.** An execution environment must never be shared across different jobs or reused across multiple execution attempts.
 4. **When a job attempt completes, fails, or is cancelled, its execution environment and temporary workspace directory must be completely destroyed.**
 5. **Worker host daemons must remain isolated from the containerized user processes they supervise.**
+6. **A worker must hold a verified active lease before executing a job and must periodically renew the lease during execution.**
+7. **If lease ownership is definitively lost during execution, the running container must be immediately terminated** to prevent split-brain duplicate concurrent execution across workers.
+8. **Job attempt results and state transitions must be persisted transactionally in PostgreSQL before the worker lease is released.**
+9. **Ephemeral workspace and container cleanup must run via guaranteed teardown (`finally`)**; cleanup failures must be logged without masking the primary execution result.
 
 ---
 
@@ -61,9 +65,11 @@ This document establishes the binding architectural invariants for Forge V2. The
 ## 6. Security
 
 1. **Execution environments must enforce resource boundaries (CPU limits, memory limits, and wall-clock timeouts)** to prevent single-job denial-of-service across worker nodes.
-2. **Job commands should execute under unprivileged user IDs (non-root)** within containers whenever possible to reduce container-escape attack surfaces.
-3. **Host system directories, Docker daemon sockets, and host operating system filesystems must never be mounted writeable into untrusted user job containers.**
+2. **Job commands should execute under unprivileged user IDs (non-root, `--user 1000:1000` by default)** within containers whenever possible to reduce container-escape attack surfaces.
+3. **Host system directories, Docker daemon sockets, and host operating system filesystems must never be mounted into untrusted user job containers.** Privileged mode (`--privileged`) is strictly prohibited.
 4. **Secrets and credentials must be injected dynamically into ephemeral job environments at runtime** and must never be persisted in build logs or committed to source repositories.
+5. **Docker CLI commands must be executed via structured argument arrays (`spawn('docker', args)`), preventing host shell injection.**
+6. **Host environment variables (`process.env`) must never be forwarded into execution containers**; only explicitly declared job environment variables are passed.
 
 ---
 

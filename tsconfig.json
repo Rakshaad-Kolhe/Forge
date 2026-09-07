@@ -9,6 +9,7 @@
     { "path": "packages/redis" },
     { "path": "packages/queue" },
     { "path": "packages/worker-registry" },
+    { "path": "packages/executor" },
     { "path": "apps/api" },
     { "path": "apps/scheduler" },
     { "path": "apps/worker" },

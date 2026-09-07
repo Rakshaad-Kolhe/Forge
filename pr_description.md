@@ -1,43 +1,38 @@
-# PR 12: Distributed Worker Leases & Job Claiming
+# PR 13: Container Executor & Sandboxed Job Execution
 
 ## Summary
 
-This pull request implements **PR 12: Distributed Worker Leases & Job Claiming** for Forge V2. It establishes Forge's distributed job ownership foundation: a selected worker atomically claims a job through a renewable, time-bounded lease backed authoritatively by PostgreSQL.
+This pull request implements **PR 13: Container Executor & Sandboxed Job Execution** for Forge V2. It introduces Forge's execution plane abstraction (`Executor`) and a production-oriented container execution engine (`DockerExecutor` in `@forge/executor`), enabling workers to safely execute claimed jobs inside isolated, disposable, non-root Docker containers with explicit resource constraints, hard wall-clock timeouts, bounded log capture, and transactional result persistence in PostgreSQL.
 
 ---
 
 ## Key Architectural Decisions & Guarantees
 
-1. **PostgreSQL as Authoritative Source of Truth for Leases**:
-   - Explicitly rejects lock-free dual writes or Redis-as-authoritative-lock architectures for job ownership.
-   - Authoritative lease state is stored in table `worker_leases` created via migration `005_worker_leases.sql`.
-   - Single-active-lease exclusivity is enforced by partial unique index:
-     ```sql
-     CREATE UNIQUE INDEX uq_worker_leases_active_job
-       ON worker_leases(job_id)
-       WHERE status = 'ACTIVE';
-     ```
+1. **Pluggable Executor Abstraction (`@forge/executor`)**:
+   - Establishes the `Executor` contract in `@forge/contracts` decoupling the worker daemon and scheduling plane from container engine specifics.
+   - Initial implementation: `DockerExecutor` leveraging the Docker daemon via structured process spawning (`spawn('docker', args)`), completely eliminating host-shell interpolation and command-injection vulnerabilities.
+   - Architected for seamless future extension to `KubernetesExecutor` (Pods and Jobs).
 
-2. **Atomic Claim, Renewal, and Release**:
-   - `claim()`: Acquires an exclusive row lock on the job (`SELECT ... FOR UPDATE`), checks existing lease state, evaluates expiration according to DB `NOW()`, and inserts new active lease or returns idempotent success / conflict.
-   - `renew()`: Atomic `UPDATE` checking `status = 'ACTIVE'`, owner `worker_id`, and `expires_at > NOW()`. Stale owners touch 0 rows and are rejected.
-   - `release()`: Atomic transition to `RELEASED`.
-   - `reclaimExpiredLeases()`: Bulk transition of expired active leases to `EXPIRED`.
+2. **Ephemeral Lifecycle & Non-Root Execution**:
+   - Enforces a strict one-way lifecycle: fresh ephemeral workspace created per execution attempt (`os.tmpdir()/forge-workspaces/<id>`), bind-mounted to `/workspace`, and destroyed in `finally` teardown.
+   - User commands execute under unprivileged UID:GID (`--user 1000:1000` by default), preventing containerized processes from running as root.
+   - Container isolation: `--network bridge`, `--rm=false` (for controlled exit code and log capture before removal), no `--privileged` mode, no host Docker socket mount (`/var/run/docker.sock`), and no sensitive host filesystem mounts.
 
-3. **Time Authority & Clock Invariant**:
-   - The PostgreSQL database clock (`NOW()`) is the sole authority for lease expiration.
-   - Expiration timestamps are calculated directly in PostgreSQL: `NOW() + ($durationMs * INTERVAL '1 millisecond')`.
-   - Workers never supply local timestamps for lease evaluations, eliminating clock skew vulnerabilities.
+3. **Resource Enforcement & Timeout Supervision**:
+   - Resource mapping: `JobRequirements.cpuCores` mapped to `--cpus=<float>`; `JobRequirements.memoryBytes` mapped to `--memory=<bytes>b` (enforcing Docker's 6MB minimum floor).
+   - GPU execution runtime is explicitly marked as **not verified / deferred** in accordance with Section 18, avoiding false runtime claims.
+   - Hard wall-clock timeout supervision: sends graceful `docker stop -t 2` followed by `docker kill` if needed, classifying outcomes explicitly as `TIMED_OUT`.
+   - Cancellation support: `AbortSignal` triggers container teardown and returns `CANCELLED`.
 
-4. **Distributed Failure Model & Recoverability**:
-   - When a worker crashes, its heartbeat in Redis stops and its lease expires in PostgreSQL.
-   - Queue messages remain in visibility timeout without premature acknowledgement (`ACK`), preserving recoverability.
-   - An expired lease is automatically transitioned to `EXPIRED` upon replacement claim or background sweep.
-   - Stale workers that revive cannot renew or release expired/replaced leases.
+4. **Bounded Output Capture & Truncation Protection**:
+   - `OutputCollector` streams and captures stdout and stderr up to `MAX_OUTPUT_BYTES` (default 1MB).
+   - If output exceeds the threshold, streams are truncated and marked with `truncated: true`, preventing unbounded memory consumption.
 
-5. **Concurrency & Race Condition Elimination**:
-   - Concurrent claim requests for the same unleased job are serialized via PostgreSQL row locks and enforced by the partial unique index.
-   - Verified with 10 concurrent claimants: exactly 1 winner (`ACQUIRED`, `isIdempotent: false`) and 9 conflicts (`CONFLICT`, `LEASE_ALREADY_HELD`).
+5. **Distributed Lease Synchronization & Split-Brain Elimination**:
+   - Pre-execution validation: worker verifies it holds the active, unexpired lease in PostgreSQL before launching the container.
+   - Periodic lease renewal: background timer periodically extends lease duration during long-running tasks.
+   - Split-brain abort policy: if renewal fails definitively (`LEASE_EXPIRED` or `LEASE_OWNER_MISMATCH`), the running container is immediately aborted, eliminating duplicate execution risks.
+   - Transactional persistence: `Job` and `JobAttempt` transitions pass through domain state machines and are persisted via PostgreSQL ACID transactions before the worker lease is released.
 
 ---
 
@@ -45,69 +40,59 @@ This pull request implements **PR 12: Distributed Worker Leases & Job Claiming**
 
 ### 1. Contracts Package (`packages/contracts`)
 
-- Added `JobLeaseStatus = 'ACTIVE' | 'RELEASED' | 'EXPIRED'`.
-- Added `WorkerLease` interface with timestamps and audit metadata.
-- Added `ClaimJobOptions`, `ClaimJobResult`, `RenewLeaseOptions`, `RenewLeaseResult`, `ReleaseLeaseOptions`, `ReleaseLeaseResult`.
-- Updated `ScheduledDecision` to optionally attach `lease?: WorkerLease`.
-- Added `'LEASE_CONFLICT'` to `UnschedulableReason`.
-- Added `workerJobLeaseDurationMs` and `workerJobLeaseRenewalIntervalMs` to `AppConfig`.
+- Added `ExecutionStatus = 'SUCCEEDED' | 'FAILED' | 'TIMED_OUT' | 'CANCELLED'`.
+- Added `ExecutionResult`, `ExecutionContext`, and `Executor` interfaces.
+- Extended `AppConfig` with `defaultDockerImage`, `defaultExecutionTimeoutMs`, `maxExecutionTimeoutMs`, `maxOutputBytes`, and `dockerHost`.
 
 ### 2. Configuration Package (`packages/config`)
 
-- Added `WORKER_JOB_LEASE_DURATION_MS` (default `30000`, min `1000`).
-- Added `WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS` (default `10000`, min `500`).
-- Added refinement rule ensuring `durationMs > renewalIntervalMs`.
-- Unit tests covering default values, valid overrides, and invariant violations.
+- Added `DEFAULT_DOCKER_IMAGE` (default `'alpine:3.19'`).
+- Added `DEFAULT_EXECUTION_TIMEOUT_MS` (default `60000`, min `1000`).
+- Added `MAX_EXECUTION_TIMEOUT_MS` (default `1800000`, min `1000`).
+- Added `MAX_OUTPUT_BYTES` (default `1048576`, min `1024`).
+- Added optional `DOCKER_HOST`.
+- Refinement rule: `MAX_EXECUTION_TIMEOUT_MS >= DEFAULT_EXECUTION_TIMEOUT_MS`.
+- Unit tests covering default values, overrides, and refinement failures.
 
-### 3. Database Package (`packages/database`)
+### 3. Dedicated Executor Package (`packages/executor`)
 
-- Created migration `005_worker_leases.sql` and registered in `migrator.ts`.
-- Updated `resetDatabase` to cascade drop `worker_leases`.
-- Added `WorkerLeaseRow` to `types.ts`.
-- Created `WorkerLeaseRepository` contract and `PgWorkerLeaseRepository` implementation with atomic `claim`, `renew`, `release`, `findActiveByJobId`, `findById`, `findByWorkerId`, and `reclaimExpiredLeases`.
-- Added `workerLeases` to `TransactionContext`.
-- Integration tests (16 tests) in `worker-lease-repository.test.ts` covering lifecycle, idempotent claiming, conflict rejection, renewal, release, expiry reclamation, 10-contestant concurrency races, and stale lease owner replacement.
+- New package `@forge/executor` with composite TypeScript project references.
+- `DockerExecutor`: Production container execution engine with non-root UID enforcement, structured CLI arguments, and guaranteed teardown.
+- `workspace.ts`: Ephemeral workspace management with cross-platform Windows drive (`C:\...`) to POSIX WSL mount (`/mnt/c/...`) path translation.
+- `resource-mapper.ts`: Validates and maps CPU cores and memory limits to Docker CLI flags; marks GPU execution deferred.
+- `output-stream.ts`: Bounded stdout and stderr capture.
+- Errors: `ExecutionError`, `DockerUnavailableError`, `ContainerStartupError`, `ExecutionTimeoutError`, `ExecutionCancelledError`, `CleanupError`.
+- 14 unit tests in `docker-executor.test.ts`.
+- 9 live Docker integration tests in `docker-executor.integration.test.ts`.
 
-### 4. Scheduler Service (`apps/scheduler`)
+### 4. Worker Service Integration (`apps/worker`)
 
-- Updated `SchedulerOptions` with `leaseRepository?: WorkerLeaseRepository` and `leaseDurationMs?: number`.
-- In `ForgeScheduler.schedule()`, upon selecting an eligible worker, atomically claims a worker lease when `leaseRepository` is configured.
-- Attaches `lease` to `ScheduledDecision` on success; returns `UNSCHEDULABLE` (`LEASE_CONFLICT`) on conflict.
-- In `schedulePrioritized()`, claims leases for placed jobs in priority order with non-blocking conflict semantics.
-- Preserves unacknowledged queue delivery under visibility timeout without calling ACK upon scheduling/claiming.
+- Extended `WorkerShell` with `executeJob`:
+  - Pre-execution lease ownership verification.
+  - Initial `RUNNING` domain state transition and PostgreSQL persistence.
+  - Background periodic lease renewal.
+  - Abort on definitive lease loss.
+  - Container execution via `Executor`.
+  - Terminal domain state transitions (`SUCCEEDED`, `FAILED`, `TIMED_OUT`, `CANCELLED`).
+  - Transactional persistence via `withTransaction`.
+  - Authoritative lease release.
+  - Graceful shutdown aborts running containers before releasing leases and deregistering.
+- Unit tests covering full lifecycle, timeout, and lease-loss abort.
+- Live integration tests covering end-to-end claim, execution, persistence, and lease release against real PostgreSQL and Docker engines.
 
-### 5. Worker Service Shell (`apps/worker`)
+### 5. Documentation (`docs/architecture/`)
 
-- Added `leaseRepository?: WorkerLeaseRepository` and `defaultLeaseDurationMs?: number` to `StartWorkerOptions`.
-- Added `claimJob`, `renewLease`, `releaseLease`, `getActiveLeases` to `WorkerShell`.
-- Implemented graceful release of all held active leases upon worker `stop()`.
-- Unit tests covering lease lifecycle and graceful shutdown release.
-
-### 6. Smoke Tests & Verification (`apps/scheduler/src/lease.smoke.test.ts`)
-
-- **Section 51**: 20-step sequential verification against live PostgreSQL and Redis.
-- **Section 52**: 10 concurrent claimants racing simultaneously on live PostgreSQL.
-
-### 7. Documentation
-
-- Created `docs/architecture/leases.md`.
-- Updated `docs/architecture/overview.md`, `docs/architecture/glossary.md`, `docs/architecture/invariants.md`, `docs/architecture/scheduler.md`, and `README.md`.
+- Created `docs/architecture/executor.md` specifying executor architecture, container isolation, security boundaries, and failure handling.
+- Updated `overview.md`, `glossary.md`, `invariants.md`, and `README.md`.
 
 ---
 
-## Test Execution Summary
+## Verification & Quality Gates
 
-All test suites pass cleanly across all workspaces:
-
-- `@forge/config`: 8 tests passed
-- `@forge/contracts`: types and interfaces verified
-- `@forge/pipeline`: 100 tests passed
-- `@forge/database`: 49 integration tests passed (including 16 worker lease tests)
-- `@forge/redis`: 15 integration tests passed
-- `@forge/queue`: 8 integration tests passed
-- `@forge/worker-registry`: 15 integration tests passed
-- `@forge/scheduler`: 72 tests passed (including Section 51 & 52 live smoke test matrix)
-- `@forge/worker`: 3 tests passed
-- `@forge/api`: 3 tests passed
-- `@forge/cli`: 2 tests passed
-- `@forge/web`: 1 test passed
+```bash
+npm run format:check  # Passed: All files use Prettier code style
+npm run lint          # Passed: 0 errors, 0 warnings across all workspaces
+npm run typecheck     # Passed: Clean compilation across 14 project references
+npm test              # Passed: 33 test files passed, 355 tests passed
+npm run build         # Passed: Clean production build across all packages and apps
+```

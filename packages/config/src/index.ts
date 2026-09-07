@@ -58,6 +58,26 @@ const configSchema = z
       .pipe(
         z.number().int().min(500, 'WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS must be at least 500ms'),
       ),
+    DEFAULT_DOCKER_IMAGE: z.string().default('alpine:3.19'),
+    DEFAULT_EXECUTION_TIMEOUT_MS: z
+      .string()
+      .regex(/^\d+$/, 'DEFAULT_EXECUTION_TIMEOUT_MS must be a valid integer')
+      .default('60000')
+      .transform(Number)
+      .pipe(z.number().int().min(1000, 'DEFAULT_EXECUTION_TIMEOUT_MS must be at least 1000ms')),
+    MAX_EXECUTION_TIMEOUT_MS: z
+      .string()
+      .regex(/^\d+$/, 'MAX_EXECUTION_TIMEOUT_MS must be a valid integer')
+      .default('1800000')
+      .transform(Number)
+      .pipe(z.number().int().min(1000, 'MAX_EXECUTION_TIMEOUT_MS must be at least 1000ms')),
+    MAX_OUTPUT_BYTES: z
+      .string()
+      .regex(/^\d+$/, 'MAX_OUTPUT_BYTES must be a valid integer')
+      .default('1048576')
+      .transform(Number)
+      .pipe(z.number().int().min(1024, 'MAX_OUTPUT_BYTES must be at least 1024 bytes')),
+    DOCKER_HOST: z.string().optional(),
   })
   .refine((data) => data.WORKER_HEARTBEAT_TTL_SECONDS * 1000 > data.WORKER_HEARTBEAT_INTERVAL_MS, {
     message:
@@ -68,6 +88,11 @@ const configSchema = z
     message:
       'WORKER_JOB_LEASE_DURATION_MS must be greater than WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS',
     path: ['WORKER_JOB_LEASE_DURATION_MS'],
+  })
+  .refine((data) => data.MAX_EXECUTION_TIMEOUT_MS >= data.DEFAULT_EXECUTION_TIMEOUT_MS, {
+    message:
+      'MAX_EXECUTION_TIMEOUT_MS must be greater than or equal to DEFAULT_EXECUTION_TIMEOUT_MS',
+    path: ['MAX_EXECUTION_TIMEOUT_MS'],
   });
 
 export type RawConfigInput = Record<string, string | undefined>;
@@ -102,6 +127,11 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     WORKER_HEARTBEAT_TTL_SECONDS,
     WORKER_JOB_LEASE_DURATION_MS,
     WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS,
+    DEFAULT_DOCKER_IMAGE,
+    DEFAULT_EXECUTION_TIMEOUT_MS,
+    MAX_EXECUTION_TIMEOUT_MS,
+    MAX_OUTPUT_BYTES,
+    DOCKER_HOST,
   } = result.data;
 
   return {
@@ -114,5 +144,10 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     workerHeartbeatTtlSeconds: WORKER_HEARTBEAT_TTL_SECONDS,
     workerJobLeaseDurationMs: WORKER_JOB_LEASE_DURATION_MS,
     workerJobLeaseRenewalIntervalMs: WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS,
+    defaultDockerImage: DEFAULT_DOCKER_IMAGE,
+    defaultExecutionTimeoutMs: DEFAULT_EXECUTION_TIMEOUT_MS,
+    maxExecutionTimeoutMs: MAX_EXECUTION_TIMEOUT_MS,
+    maxOutputBytes: MAX_OUTPUT_BYTES,
+    dockerHost: DOCKER_HOST,
   };
 }
