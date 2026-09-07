@@ -34,6 +34,7 @@ Forge V2 is designed as a distributed system composed of:
 - **PR 07: Reliable FIFO Job Queue (Completed)**: Redis-backed FIFO queue abstraction (`@forge/queue`), atomic dispatch, in-flight visibility tracking, unacknowledged crash recovery, and competing consumer coordination.
 - **PR 08: Worker Registration & Heartbeat (Completed)**: Distributed worker registration, durable metadata in PostgreSQL, transient liveness in Redis (`@forge/worker-registry`), crash/stale detection, and graceful lifecycle management.
 - **PR 09: Worker Capability & Resource Matching (Completed)**: Pure, deterministic placement eligibility layer (`matchesWorker`, `filterEligibleWorkers`), job execution requirements, explainable failure diagnostics, and PostgreSQL persistence.
+- **PR 10: Scheduler Foundation & Deterministic Worker Selection (Completed)**: First-class scheduler service (`@forge/scheduler`), operational eligibility (`READY + ALIVE`), deterministic baseline worker selection policy (`DeterministicFirstEligible`), explainable placement decisions, and unacknowledged queue recoverability.
 
 ---
 
@@ -51,6 +52,7 @@ Forge V2 is designed as a distributed system composed of:
 - **[Reliable FIFO Job Queue Specification](queue.md)**
 - **[Worker Registration & Heartbeat Specification](workers.md)**
 - **[Worker Capability & Resource Matching Specification](resource-matching.md)**
+- **[Task Scheduler & Deterministic Worker Selection Specification](scheduler.md)**
 - **[Architecture Glossary](glossary.md)**
 - **[Architectural Invariants Catalog](invariants.md)**
 - **[Service Boundaries Specification](boundaries.md)**
@@ -78,7 +80,9 @@ PR 01: Repository Foundation & Architecture Contract (Completed)
   │
   ├──► PR 09: Worker Capability & Resource Matching (Completed)
   │
-  ├──► PR 10: Distributed Task Scheduler & Lease Allocation (Planned)
+  ├──► PR 10: Scheduler Foundation & Deterministic Worker Selection (Completed)
   │
-  └──► PR 11: Priority & Fairness Scheduling (Planned)
+  ├──► PR 11: Priority Scheduling & Policy Layer (Planned)
+  │
+  └──► PR 12: Distributed Lease Allocation & Job Claiming (Planned)
 ```
