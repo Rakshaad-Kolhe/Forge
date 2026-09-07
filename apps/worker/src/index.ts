@@ -3,12 +3,21 @@ import crypto from 'node:crypto';
 import { loadConfig } from '@forge/config';
 import type {
   ClaimJobResult,
+  ExecutionResult,
+  Executor,
   ReleaseLeaseResult,
   RenewLeaseResult,
   WorkerLease,
 } from '@forge/contracts';
-import type { WorkerLeaseRepository } from '@forge/database';
+import {
+  withTransaction,
+  type DatabasePool,
+  type JobRepository,
+  type WorkerLeaseRepository,
+} from '@forge/database';
+import { DockerExecutor } from '@forge/executor';
 import { createLogger, type Logger } from '@forge/logging';
+import type { Job, JobAttempt } from '@forge/pipeline';
 import {
   type WorkerRegistry,
   type WorkerId,
@@ -23,11 +32,30 @@ export interface StartWorkerOptions {
   workerId?: string;
   registry?: WorkerRegistry;
   leaseRepository?: WorkerLeaseRepository;
+  jobRepository?: JobRepository;
+  pool?: DatabasePool;
+  executor?: Executor;
   defaultLeaseDurationMs?: number;
+  defaultLeaseRenewalIntervalMs?: number;
   hostname?: string;
   capabilities?: WorkerCapabilities;
   resources?: WorkerResources;
   heartbeatIntervalMs?: number;
+}
+
+export interface ExecuteJobOptions {
+  readonly job: Job;
+  readonly leaseId: string;
+  readonly image?: string;
+  readonly environment?: Readonly<Record<string, string>>;
+  readonly timeoutMs?: number;
+  readonly executor?: Executor;
+}
+
+export interface ExecuteJobResult {
+  readonly result: ExecutionResult;
+  readonly attempt: JobAttempt;
+  readonly job: Job;
 }
 
 export interface WorkerShell {
@@ -36,13 +64,14 @@ export interface WorkerShell {
   claimJob: (jobId: string, durationMs?: number) => Promise<ClaimJobResult>;
   renewLease: (leaseId: string, jobId: string, durationMs?: number) => Promise<RenewLeaseResult>;
   releaseLease: (leaseId: string, jobId: string) => Promise<ReleaseLeaseResult>;
+  executeJob: (options: ExecuteJobOptions) => Promise<ExecuteJobResult>;
   getActiveLeases: () => readonly WorkerLease[];
   stop: () => Promise<void>;
 }
 
 /**
  * Starts the Forge Worker service shell.
- * Coordinates worker identity, registration, and periodic heartbeat with the WorkerRegistry.
+ * Coordinates worker identity, registration, periodic heartbeat, and containerized job execution.
  */
 export function startWorker(options?: StartWorkerOptions): WorkerShell {
   const config = loadConfig();
@@ -58,6 +87,18 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
   let currentStatus: WorkerStatus = 'READY';
   let heartbeatTimer: NodeJS.Timeout | undefined;
   const activeLeases = new Map<string, WorkerLease>();
+  const activeExecutions = new Set<AbortController>();
+
+  const defaultExecutor =
+    options?.executor ??
+    new DockerExecutor({
+      defaultImage: config.defaultDockerImage,
+      defaultTimeoutMs: config.defaultExecutionTimeoutMs,
+      maxTimeoutMs: config.maxExecutionTimeoutMs,
+      maxOutputBytes: config.maxOutputBytes,
+      dockerHost: config.dockerHost,
+      logger,
+    });
 
   logger.info('Forge Worker service shell started', {
     status: 'running',
@@ -68,7 +109,7 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
 
   if (options?.registry) {
     const capabilities: WorkerCapabilities = options.capabilities ?? {
-      executors: ['shell'],
+      executors: ['docker'],
     };
     const resources: WorkerResources = options.resources ?? {
       cpuCores: os.cpus().length,
@@ -192,6 +233,161 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
     return result;
   };
 
+  const executeJob = async (jobOpts: ExecuteJobOptions): Promise<ExecuteJobResult> => {
+    const { job, leaseId } = jobOpts;
+
+    // 1. Pre-execution lease ownership validation
+    if (options?.leaseRepository) {
+      const activeLease = await options.leaseRepository.findActiveByJobId(job.id);
+      if (!activeLease || activeLease.id !== leaseId || activeLease.workerId !== workerId) {
+        throw new Error(
+          `Worker "${workerId}" does not hold active lease "${leaseId}" for job "${job.id}"`,
+        );
+      }
+    }
+
+    // 2. Lifecycle start: spawn JobAttempt and transition Job/Attempt to RUNNING
+    const attempt = job.createAttempt();
+    attempt.start(new Date().toISOString());
+    job.start();
+
+    // Persist RUNNING state to authoritative store
+    if (options?.pool) {
+      await withTransaction(options.pool, async (tx) => {
+        await tx.jobs.save(job);
+        await tx.jobAttempts.save(attempt);
+      });
+    } else if (options?.jobRepository) {
+      await options.jobRepository.save(job);
+    }
+
+    // 3. Periodic lease renewal background timer
+    const abortController = new AbortController();
+    activeExecutions.add(abortController);
+    let renewalTimer: NodeJS.Timeout | undefined;
+    let ownershipLost = false;
+
+    if (options?.leaseRepository) {
+      const renewalInterval =
+        options.defaultLeaseRenewalIntervalMs ?? config.workerJobLeaseRenewalIntervalMs;
+      const leaseDuration = options.defaultLeaseDurationMs ?? config.workerJobLeaseDurationMs;
+
+      renewalTimer = setInterval(async () => {
+        try {
+          const renewRes = await renewLease(leaseId, job.id, leaseDuration);
+          if (renewRes.status === 'REJECTED') {
+            if (renewRes.reason === 'LEASE_EXPIRED' || renewRes.reason === 'LEASE_OWNER_MISMATCH') {
+              ownershipLost = true;
+              logger.warn('Lease ownership lost during execution, aborting running container', {
+                workerId,
+                jobId: job.id,
+                leaseId,
+                reason: renewRes.reason,
+              });
+              abortController.abort();
+            }
+          }
+        } catch (err: unknown) {
+          logger.error('Error during periodic lease renewal tick', {
+            workerId,
+            jobId: job.id,
+            leaseId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }, renewalInterval);
+      renewalTimer.unref();
+    }
+
+    // 4. Execute container workload via Executor
+    const executorToUse = jobOpts.executor ?? defaultExecutor;
+    let execResult: ExecutionResult;
+
+    try {
+      execResult = await executorToUse.execute({
+        jobId: job.id,
+        attemptId: attempt.id,
+        workerId,
+        command: job.command,
+        image: jobOpts.image,
+        environment: jobOpts.environment,
+        cpuCores: job.requirements?.cpuCores,
+        memoryBytes: job.requirements?.memoryBytes,
+        timeoutMs: jobOpts.timeoutMs,
+        abortSignal: abortController.signal,
+      });
+    } catch (err) {
+      execResult = {
+        status: 'FAILED',
+        exitCode: null,
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        durationMs: 0,
+        stdout: '',
+        stderr: err instanceof Error ? err.message : String(err),
+        truncated: false,
+        failureReason: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      if (renewalTimer) {
+        clearInterval(renewalTimer);
+      }
+      activeExecutions.delete(abortController);
+    }
+
+    // 5. Apply state machine transitions
+    if (ownershipLost) {
+      attempt.fail(1, 'Lease ownership lost during execution', new Date().toISOString());
+      job.fail();
+    } else if (execResult.status === 'SUCCEEDED') {
+      attempt.succeed(execResult.exitCode ?? 0, execResult.finishedAt.toISOString());
+      job.succeed();
+    } else if (execResult.status === 'TIMED_OUT') {
+      attempt.timeout(execResult.finishedAt.toISOString());
+      job.timeout();
+    } else if (execResult.status === 'CANCELLED') {
+      attempt.cancel(execResult.finishedAt.toISOString());
+      job.cancel();
+    } else {
+      attempt.fail(
+        execResult.exitCode ?? 1,
+        execResult.failureReason,
+        execResult.finishedAt.toISOString(),
+      );
+      job.fail();
+    }
+
+    // 6. Transactional persistence
+    if (options?.pool) {
+      await withTransaction(options.pool, async (tx) => {
+        await tx.jobs.save(job);
+        await tx.jobAttempts.save(attempt);
+      });
+    } else if (options?.jobRepository) {
+      await options.jobRepository.save(job);
+    }
+
+    // 7. Authoritative lease release (only if ownership was not lost)
+    if (!ownershipLost && options?.leaseRepository) {
+      try {
+        await releaseLease(leaseId, job.id);
+      } catch (err) {
+        logger.warn('Failed to release lease after execution', {
+          workerId,
+          jobId: job.id,
+          leaseId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return {
+      result: execResult,
+      attempt,
+      job,
+    };
+  };
+
   const getActiveLeases = (): readonly WorkerLease[] => {
     return Object.freeze(Array.from(activeLeases.values()));
   };
@@ -202,8 +398,19 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
     claimJob,
     renewLease,
     releaseLease,
+    executeJob,
     getActiveLeases,
     stop: async () => {
+      // Abort any actively executing containers
+      for (const controller of activeExecutions) {
+        try {
+          controller.abort();
+        } catch {
+          // ignore
+        }
+      }
+      activeExecutions.clear();
+
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = undefined;

@@ -14,6 +14,11 @@ describe('loadConfig', () => {
       workerHeartbeatTtlSeconds: 15,
       workerJobLeaseDurationMs: 30000,
       workerJobLeaseRenewalIntervalMs: 10000,
+      defaultDockerImage: 'alpine:3.19',
+      defaultExecutionTimeoutMs: 60000,
+      maxExecutionTimeoutMs: 1800000,
+      maxOutputBytes: 1048576,
+      dockerHost: undefined,
     });
   });
 
@@ -28,6 +33,11 @@ describe('loadConfig', () => {
       WORKER_HEARTBEAT_TTL_SECONDS: '10',
       WORKER_JOB_LEASE_DURATION_MS: '45000',
       WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS: '15000',
+      DEFAULT_DOCKER_IMAGE: 'node:20-alpine',
+      DEFAULT_EXECUTION_TIMEOUT_MS: '120000',
+      MAX_EXECUTION_TIMEOUT_MS: '600000',
+      MAX_OUTPUT_BYTES: '2097152',
+      DOCKER_HOST: 'tcp://127.0.0.1:2375',
     });
     expect(config).toEqual({
       nodeEnv: 'production',
@@ -39,6 +49,11 @@ describe('loadConfig', () => {
       workerHeartbeatTtlSeconds: 10,
       workerJobLeaseDurationMs: 45000,
       workerJobLeaseRenewalIntervalMs: 15000,
+      defaultDockerImage: 'node:20-alpine',
+      defaultExecutionTimeoutMs: 120000,
+      maxExecutionTimeoutMs: 600000,
+      maxOutputBytes: 2097152,
+      dockerHost: 'tcp://127.0.0.1:2375',
     });
   });
 
@@ -94,6 +109,15 @@ describe('loadConfig', () => {
       loadConfig({
         WORKER_JOB_LEASE_DURATION_MS: '10000',
         WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS: '15000', // 15s > 10s
+      });
+    }).toThrow(ConfigValidationError);
+  });
+
+  it('fails clearly when MAX_EXECUTION_TIMEOUT_MS is less than DEFAULT_EXECUTION_TIMEOUT_MS', () => {
+    expect(() => {
+      loadConfig({
+        DEFAULT_EXECUTION_TIMEOUT_MS: '120000',
+        MAX_EXECUTION_TIMEOUT_MS: '60000', // 60s < 120s
       });
     }).toThrow(ConfigValidationError);
   });

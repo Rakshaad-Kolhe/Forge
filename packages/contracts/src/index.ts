@@ -55,6 +55,11 @@ export interface AppConfig {
   workerHeartbeatTtlSeconds: number;
   workerJobLeaseDurationMs: number;
   workerJobLeaseRenewalIntervalMs: number;
+  defaultDockerImage: string;
+  defaultExecutionTimeoutMs: number;
+  maxExecutionTimeoutMs: number;
+  maxOutputBytes: number;
+  dockerHost?: string;
 }
 
 /**
@@ -243,3 +248,49 @@ export interface UnschedulableDecision {
  * Complete typed scheduling placement decision contract.
  */
 export type ScheduleDecision = ScheduledDecision | UnschedulableDecision;
+
+/**
+ * Lifecycle status of an ephemeral job execution attempt.
+ */
+export type ExecutionStatus = 'SUCCEEDED' | 'FAILED' | 'TIMED_OUT' | 'CANCELLED';
+
+/**
+ * Result produced by an Executor upon completing a single job execution attempt.
+ */
+export interface ExecutionResult {
+  readonly status: ExecutionStatus;
+  readonly exitCode: number | null;
+  readonly startedAt: Date;
+  readonly finishedAt: Date;
+  readonly durationMs: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly truncated: boolean;
+  readonly failureReason?: string;
+}
+
+/**
+ * Context and parameters provided to an Executor to execute a single job attempt.
+ */
+export interface ExecutionContext {
+  readonly jobId: string;
+  readonly attemptId: string;
+  readonly workerId: string;
+  readonly command: string;
+  readonly image?: string;
+  readonly environment?: Readonly<Record<string, string>>;
+  readonly workingDirectory?: string;
+  readonly cpuCores?: number;
+  readonly memoryBytes?: number;
+  readonly timeoutMs?: number;
+  readonly abortSignal?: AbortSignal;
+}
+
+/**
+ * Pluggable executor interface abstracting task execution away from specific container runtimes.
+ */
+export interface Executor {
+  readonly name: string;
+  execute(context: ExecutionContext): Promise<ExecutionResult>;
+  isAvailable(): Promise<boolean>;
+}

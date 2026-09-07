@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 12: Distributed Worker Leases & Job Claiming**.
+This repository is currently at **PR 13: Container Executor & Sandboxed Job Execution**.
 
 ---
 
@@ -13,27 +13,28 @@ This repository is currently at **PR 12: Distributed Worker Leases & Job Claimin
 - **Repository Architecture**: Monorepo layout using standard NPM workspaces (`apps/*`, `packages/*`).
 - **TypeScript Setup**: Strict TypeScript 5 with composite project references and shared compiler options.
 - **Shared Packages**:
-  - `@forge/contracts`: Shared data contracts, types, and interfaces (including `WorkerCapabilities`, `WorkerResources`, `JobRequirements`, `ScheduleDecision`, `JobPriority` constants `[-1000, 1000]`, and `WorkerLease` ownership contracts).
-  - `@forge/config`: Strongly typed runtime environment validation using Zod (including `WORKER_JOB_LEASE_DURATION_MS` and `WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS`).
+  - `@forge/contracts`: Shared data contracts, types, and interfaces (including `WorkerCapabilities`, `WorkerResources`, `JobRequirements`, `ScheduleDecision`, `JobPriority` constants `[-1000, 1000]`, `WorkerLease` ownership contracts, and `Executor` / `ExecutionContext` / `ExecutionResult` abstractions).
+  - `@forge/config`: Strongly typed runtime environment validation using Zod (including lease parameters, `DEFAULT_DOCKER_IMAGE`, `DEFAULT_EXECUTION_TIMEOUT_MS`, `MAX_EXECUTION_TIMEOUT_MS`, `MAX_OUTPUT_BYTES`, and `DOCKER_HOST`).
   - `@forge/logging`: Structured logger (human-readable in development, newline-delimited JSON in production).
   - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines, Job Execution Requirements, Job Priority validation and propagation, and pure deterministic capability/resource matching).
   - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations `001` through `005`, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, worker registry, persisted job requirements, priority index, and `worker_leases` with partial unique index for single-active-lease exclusivity).
   - `@forge/redis`: Redis coordination foundation (Connection management, health checks, low-level generic primitives, TTL, atomic operations, and real Redis integration tests).
   - `@forge/queue`: Redis-backed reliable FIFO job queue (At-least-once delivery, explicit acknowledgement, queue depth, in-flight visibility tracking, crash/unacknowledged recovery, and competing consumer coordination).
   - `@forge/worker-registry`: Distributed worker registration and liveness coordination (Durable worker metadata and hardware capacity in PostgreSQL, transient heartbeat state with TTL in Redis, crash/stale detection, graceful deregistration, and isolated lifecycle state machines).
+  - `@forge/executor`: Sandboxed container execution engine implementing `Executor` with production-oriented `DockerExecutor`, ephemeral temporary workspace management, non-root user execution (`--user 1000:1000`), container isolation (no privileged mode, no host Docker socket mount, bridge networking), resource limit enforcement (CPU, memory, unverified GPU status), wall-clock timeout supervision (`docker stop` -> `docker kill`), bounded stdout/stderr capture with truncation protection, and guaranteed teardown in `finally` blocks.
 - **Service Shells & Applications**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
   - `apps/scheduler`: Task scheduler service (`@forge/scheduler`) providing operational eligibility evaluation (`READY + ALIVE`), deterministic worker selection policy (`DeterministicFirstEligible`), priority scheduling policy (`HighestPriorityFirstPolicy`), canonical alphanumeric tie-breaking, non-blocking unschedulable semantics, batch evaluation, unacknowledged queue recoverability, and atomic distributed worker lease acquisition via PostgreSQL.
-  - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, lease lifecycle management (`claimJob`, `renewLease`, `releaseLease`), and graceful deregistration and lease release on shutdown.
+  - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, lease lifecycle management (`claimJob`, `renewLease`, `releaseLease`), and containerized job execution (`executeJob`) with active lease validation, periodic lease renewal, definitive lease-loss abort protection, transactional PostgreSQL persistence, and graceful shutdown.
   - `apps/cli`: CLI executable supporting `--help` and `--version`.
   - `apps/web`: Next.js landing page displaying architectural boundaries.
-- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, capability/resource matching, job priority validation, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, worker service shell, scheduler selection policies, priority ordering, worker lease lifecycle & concurrency races, and full scheduler integration.
+- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, capability/resource matching, job priority validation, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, worker service shell, scheduler selection policies, priority ordering, worker lease lifecycle & concurrency races, Docker executor unit & live container integration, and worker lease + execution persistence integration.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
-- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, worker registration spec, resource matching spec, scheduler architecture spec, and distributed worker leases spec in `docs/architecture/`.
+- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, worker registration spec, resource matching spec, scheduler architecture spec, distributed worker leases spec, and container executor spec in `docs/architecture/`.
 
 ### Planned (Future PRs)
 
-- Container executors (Docker daemon and Kubernetes job runners) (PR 13+)
+- Kubernetes executor (Pods and Jobs) (PR 14+)
 - Real-time WebSocket streaming for live logs and job statuses
 - Authentication, API keys, and role-based access control
 - Webhook ingestion (GitHub, GitLab)
@@ -60,7 +61,8 @@ forge/
 │   ├── database/       # PostgreSQL connection, migrations, repositories
 │   ├── redis/          # Redis connection, health checks, coordination primitives
 │   ├── queue/          # Redis-backed FIFO job queue and recovery primitives
-│   └── worker-registry/# Worker registration, metadata and heartbeat coordination
+│   ├── worker-registry/# Worker registration, metadata and heartbeat coordination
+│   └── executor/       # Container executor and ephemeral execution engine
 ├── docs/
 │   └── architecture/
 │       ├── decisions/  # Architecture Decision Records (ADR-001 - ADR-005)
@@ -70,12 +72,13 @@ forge/
 │       ├── workers.md  # Worker registration & heartbeat architecture
 │       ├── resource-matching.md # Worker capability & resource matching architecture
 │       ├── scheduler.md         # Task scheduler & deterministic worker selection
+│       ├── leases.md            # Distributed worker leases & job claiming
+│       ├── executor.md          # Container executor & sandboxed job execution
 │       ├── domain-model.md # Domain model & state machines specification
 │       ├── glossary.md # Architectural domain glossary
 │       ├── invariants.md # Non-negotiable architectural rules
 │       ├── overview.md # System overview and roadmap
 │       └── boundaries.md # Service boundaries and allowed roles
-
 ├── .env.example        # Foundational environment variable template
 ├── tsconfig.base.json  # Shared strict TypeScript configuration
 ├── package.json        # Workspace configuration and root scripts
