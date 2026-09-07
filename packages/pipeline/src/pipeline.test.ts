@@ -103,7 +103,7 @@ describe('Pipeline Domain Model', () => {
     expect(pipeline.toJSON()).toEqual({
       id: 'p-1',
       name: 'Build Pipeline',
-      steps: [{ name: 'build', command: 'make', dependsOn: [] }],
+      steps: [{ name: 'build', command: 'make', dependsOn: [], priority: 0 }],
     });
   });
 });

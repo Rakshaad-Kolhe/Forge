@@ -110,7 +110,9 @@ describe('Job Domain Model', () => {
       stepName: 'build',
       command: 'npm run build',
       dependsOn: ['test'],
+      priority: 0,
       status: 'PENDING',
+
       attempts: [
         {
           id: 'job-serialize-attempt-1',

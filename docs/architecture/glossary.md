@@ -78,4 +78,16 @@ The baseline worker selection policy for Forge V2 that sorts candidate workers m
 
 ### ScheduleDecision
 
-The typed, explainable result produced by the scheduler service. It explicitly differentiates successful placements (`SCHEDULED`, identifying the selected worker and candidate counts) from placement failures (`UNSCHEDULABLE`, detailing why no candidate matched).
+The typed, explainable result produced by the scheduler service. It explicitly differentiates successful placements (`SCHEDULED`, identifying the selected worker, candidate counts, and job priority) from placement failures (`UNSCHEDULABLE`, detailing why no candidate matched and job priority).
+
+### Job Priority
+
+A bounded integer assigned to a pipeline step or job (`[-1000, 1000]`, default `0`) indicating its scheduling precedence. Higher numerical values indicate higher scheduling urgency. Enforced via domain validation and PostgreSQL check constraints.
+
+### HighestPriorityFirst
+
+The baseline deterministic priority scheduling policy in Forge V2. Ready jobs are ordered strictly by descending priority (`priority DESC`), with ties broken deterministically by ascending job ID (`jobId ASC`) alphanumeric code-point order.
+
+### Non-Blocking Unschedulable Semantics
+
+The scheduling invariant that an unschedulable higher-priority job (e.g., unsatisfiable CPU/memory constraints) must never block eligible lower-priority jobs in a batch from being evaluated and assigned to compatible workers.

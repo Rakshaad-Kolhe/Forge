@@ -64,6 +64,7 @@ export interface JobRow {
   command: string;
   depends_on: unknown;
   requirements?: unknown;
+  priority?: number;
   status: string;
   created_at: Date;
 }

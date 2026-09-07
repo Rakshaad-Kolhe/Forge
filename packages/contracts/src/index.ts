@@ -82,6 +82,21 @@ export interface JobRequirements {
 }
 
 /**
+ * Default integer scheduling priority assigned to jobs when unspecified.
+ */
+export const DEFAULT_JOB_PRIORITY = 0;
+
+/**
+ * Minimum permitted integer job scheduling priority.
+ */
+export const MIN_JOB_PRIORITY = -1000;
+
+/**
+ * Maximum permitted integer job scheduling priority.
+ */
+export const MAX_JOB_PRIORITY = 1000;
+
+/**
  * Status of a scheduler placement decision.
  */
 export type ScheduleDecisionStatus = 'SCHEDULED' | 'UNSCHEDULABLE';
@@ -100,6 +115,7 @@ export interface ScheduledDecision {
   readonly workerId: string;
   readonly candidateWorkerCount: number;
   readonly eligibleWorkerCount: number;
+  readonly priority?: number;
   readonly reason?: string;
 }
 
@@ -111,6 +127,7 @@ export interface UnschedulableDecision {
   readonly jobId: string;
   readonly candidateWorkerCount: number;
   readonly eligibleWorkerCount: number;
+  readonly priority?: number;
   readonly reason: UnschedulableReason;
   readonly failureReasons?: readonly string[];
 }

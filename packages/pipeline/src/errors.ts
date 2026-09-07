@@ -129,3 +129,12 @@ export class JobRequirementsValidationError extends PipelineValidationError {
     super(message, issues);
   }
 }
+
+/**
+ * Thrown when job scheduling priority validation fails.
+ */
+export class InvalidJobPriorityError extends PipelineValidationError {
+  constructor(message: string, issues: readonly string[] = []) {
+    super(message, issues);
+  }
+}

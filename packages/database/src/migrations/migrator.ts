@@ -96,6 +96,19 @@ ALTER TABLE jobs
 ADD COLUMN IF NOT EXISTS requirements JSONB NOT NULL DEFAULT '{}'::jsonb;
 `;
 
+export const JOB_PRIORITY_SQL = `-- Forge V2: PR 11 - Job Priority Scheduling
+ALTER TABLE jobs
+ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE jobs
+DROP CONSTRAINT IF EXISTS chk_jobs_priority;
+
+ALTER TABLE jobs
+ADD CONSTRAINT chk_jobs_priority CHECK (priority >= -1000 AND priority <= 1000);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_priority ON jobs(priority DESC);
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     name: '001_initial_schema',
@@ -108,6 +121,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     name: '003_job_requirements',
     sql: JOB_REQUIREMENTS_SQL,
+  },
+  {
+    name: '004_job_priority',
+    sql: JOB_PRIORITY_SQL,
   },
 ]);
 

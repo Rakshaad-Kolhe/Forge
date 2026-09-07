@@ -2,7 +2,12 @@ import { createLogger } from '@forge/logging';
 import { createJobId, createPipelineRunId, Job, type WorkerCandidate } from '@forge/pipeline';
 import { describe, expect, it, vi } from 'vitest';
 import { JobNotFoundError, JobSourceError, WorkerSourceError } from './errors.js';
-import { evaluatePlacement, ForgeScheduler, isOperationallyEligible } from './scheduler.js';
+import {
+  evaluatePlacement,
+  evaluatePrioritizedWork,
+  ForgeScheduler,
+  isOperationallyEligible,
+} from './scheduler.js';
 import type { JobSource, WorkerSource } from './types.js';
 
 describe('Scheduler — isOperationallyEligible', () => {
@@ -386,5 +391,173 @@ describe('ForgeScheduler — Service Class with Dependency Injection', () => {
 
     expect(decision.status).toBe('UNSCHEDULABLE');
     expect(decision.reason).toBe('NO_ELIGIBLE_WORKER');
+  });
+
+  it('includes job priority in single schedule decision', async () => {
+    const jobWithPriority = new Job({
+      id: createJobId('job-prio-42'),
+      pipelineRunId: createPipelineRunId('run-prio'),
+      stepName: 'build',
+      command: 'echo build',
+      priority: 42,
+    });
+
+    const mockWorkerSource: WorkerSource = {
+      listWorkers: vi.fn().mockResolvedValue([
+        {
+          workerId: 'worker-1',
+          capabilities: { executors: ['shell'] },
+          resources: { cpuCores: 4, memoryBytes: 4096 },
+          status: 'READY',
+          liveness: 'ALIVE',
+        },
+      ]),
+    };
+
+    const scheduler = new ForgeScheduler({ workerSource: mockWorkerSource });
+    const decision = await scheduler.schedule(jobWithPriority);
+
+    expect(decision.status).toBe('SCHEDULED');
+    expect(decision.priority).toBe(42);
+  });
+});
+
+describe('Scheduler — evaluatePrioritizedWork & schedulePrioritized', () => {
+  const workerNormal: WorkerCandidate = {
+    workerId: 'worker-normal',
+    capabilities: { executors: ['docker'] },
+    resources: { cpuCores: 4, memoryBytes: 8192 },
+    ...({ status: 'READY', liveness: 'ALIVE' } as unknown as WorkerCandidate),
+  };
+
+  const jobHighUnsatisfiable = new Job({
+    id: createJobId('job-high-unschedulable'),
+    pipelineRunId: createPipelineRunId('run-batch'),
+    stepName: 'huge-task',
+    command: 'echo huge',
+    priority: 500,
+    requirements: { executor: 'docker', cpuCores: 64, memoryBytes: 128 * 1024 * 1024 * 1024 },
+  });
+
+  const jobMediumEligible = new Job({
+    id: createJobId('job-medium-eligible'),
+    pipelineRunId: createPipelineRunId('run-batch'),
+    stepName: 'med-task',
+    command: 'echo med',
+    priority: 100,
+    requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+  });
+
+  const jobLowEligible = new Job({
+    id: createJobId('job-low-eligible'),
+    pipelineRunId: createPipelineRunId('run-batch'),
+    stepName: 'low-task',
+    command: 'echo low',
+    priority: -50,
+    requirements: { executor: 'docker', cpuCores: 1, memoryBytes: 1024 },
+  });
+
+  it('demonstrates non-blocking unschedulable semantics: unsatisfiable high-priority job never blocks eligible lower-priority jobs', () => {
+    // Input order is intentionally shuffled
+    const batch = [jobLowEligible, jobHighUnsatisfiable, jobMediumEligible];
+
+    const result = evaluatePrioritizedWork(batch, [workerNormal]);
+
+    // Evaluation sequence must be strictly priority descending: 500 -> 100 -> -50
+    expect(result.orderedDecisions).toHaveLength(3);
+    expect(result.orderedDecisions[0]?.jobId).toBe('job-high-unschedulable');
+    expect(result.orderedDecisions[0]?.status).toBe('UNSCHEDULABLE');
+    expect(result.orderedDecisions[0]?.priority).toBe(500);
+
+    // Job medium (100) was NOT blocked by job high (500) being unschedulable
+    expect(result.orderedDecisions[1]?.jobId).toBe('job-medium-eligible');
+    expect(result.orderedDecisions[1]?.status).toBe('SCHEDULED');
+    expect(result.orderedDecisions[1]?.priority).toBe(100);
+
+    // Job low (-50) was also evaluated and scheduled
+    expect(result.orderedDecisions[2]?.jobId).toBe('job-low-eligible');
+    expect(result.orderedDecisions[2]?.status).toBe('SCHEDULED');
+    expect(result.orderedDecisions[2]?.priority).toBe(-50);
+
+    expect(result.scheduledDecisions).toHaveLength(2);
+    expect(result.unschedulableDecisions).toHaveLength(1);
+    expect(result.unschedulableDecisions[0]?.reason).toBe('NO_ELIGIBLE_WORKER');
+  });
+
+  it('schedules prioritized batch via ForgeScheduler.schedulePrioritized with mixed Job and IDs', async () => {
+    const mockWorkerSource: WorkerSource = {
+      listWorkers: vi.fn().mockResolvedValue([workerNormal]),
+    };
+
+    const mockJobSource: JobSource = {
+      getJob: vi.fn().mockImplementation(async (id: string) => {
+        if (id === jobMediumEligible.id) return jobMediumEligible;
+        return null;
+      }),
+    };
+
+    const scheduler = new ForgeScheduler({
+      workerSource: mockWorkerSource,
+      jobSource: mockJobSource,
+    });
+
+    const result = await scheduler.schedulePrioritized([
+      jobLowEligible,
+      jobMediumEligible.id, // ID string
+    ]);
+
+    expect(result.orderedDecisions).toHaveLength(2);
+    // 100 > -50
+    expect(result.orderedDecisions[0]?.jobId).toBe(jobMediumEligible.id);
+    expect(result.orderedDecisions[0]?.status).toBe('SCHEDULED');
+    expect(result.orderedDecisions[1]?.jobId).toBe(jobLowEligible.id);
+    expect(result.orderedDecisions[1]?.status).toBe('SCHEDULED');
+  });
+
+  it('scheduleNextBatch dequeues batch, orders by priority, and evaluates without acknowledging messages', async () => {
+    const mockQueue = {
+      dequeue: vi
+        .fn()
+        .mockResolvedValueOnce({
+          message: { messageId: 'msg-1', jobId: jobLowEligible.id },
+        })
+        .mockResolvedValueOnce({
+          message: { messageId: 'msg-2', jobId: jobMediumEligible.id },
+        })
+        .mockResolvedValueOnce(null),
+      acknowledge: vi.fn(),
+    };
+
+    const mockJobSource: JobSource = {
+      getJob: vi.fn().mockImplementation(async (id: string) => {
+        if (id === jobLowEligible.id) return jobLowEligible;
+        if (id === jobMediumEligible.id) return jobMediumEligible;
+        return null;
+      }),
+    };
+
+    const mockWorkerSource: WorkerSource = {
+      listWorkers: vi.fn().mockResolvedValue([workerNormal]),
+    };
+
+    const scheduler = new ForgeScheduler({
+      workerSource: mockWorkerSource,
+      jobSource: mockJobSource,
+    });
+
+    const batchResult = await scheduler.scheduleNextBatch(
+      mockQueue as unknown as Parameters<typeof scheduler.scheduleNextBatch>[0],
+      5,
+    );
+
+    expect(batchResult.deliveries).toHaveLength(2);
+    expect(batchResult.result.orderedDecisions).toHaveLength(2);
+
+    // Evaluated in priority order: jobMediumEligible (100) first, then jobLowEligible (-50)
+    expect(batchResult.result.orderedDecisions[0]?.jobId).toBe(jobMediumEligible.id);
+    expect(batchResult.result.orderedDecisions[1]?.jobId).toBe(jobLowEligible.id);
+
+    // CRITICAL: queue.acknowledge must NEVER be called by scheduler
+    expect(mockQueue.acknowledge).not.toHaveBeenCalled();
   });
 });
