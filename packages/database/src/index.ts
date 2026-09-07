@@ -21,6 +21,8 @@ export {
   MIGRATIONS,
   resetDatabase,
   runMigrations,
+  WORKER_LEASES_SQL,
+  WORKER_REGISTRY_SQL,
 } from './migrations/migrator.js';
 
 // Repositories - Contracts
@@ -28,6 +30,7 @@ export type { JobAttemptRepository } from './repositories/contracts/job-attempt-
 export type { JobRepository } from './repositories/contracts/job-repository.contract.js';
 export type { PipelineRepository } from './repositories/contracts/pipeline-repository.contract.js';
 export type { PipelineRunRepository } from './repositories/contracts/pipeline-run-repository.contract.js';
+export type { WorkerLeaseRepository } from './repositories/contracts/worker-lease-repository.contract.js';
 export type {
   WorkerLifecycleStatus,
   WorkerRecord,
@@ -40,6 +43,7 @@ export { PgJobAttemptRepository } from './repositories/pg-job-attempt-repository
 export { PgJobRepository } from './repositories/pg-job-repository.js';
 export { PgPipelineRepository } from './repositories/pg-pipeline-repository.js';
 export { PgPipelineRunRepository } from './repositories/pg-pipeline-run-repository.js';
+export { PgWorkerLeaseRepository } from './repositories/pg-worker-lease-repository.js';
 export { PgWorkerRepository } from './repositories/pg-worker-repository.js';
 
 // Transactions
@@ -54,4 +58,5 @@ export type {
   JobRow,
   PipelineRow,
   PipelineRunRow,
+  WorkerLeaseRow,
 } from './types.js';

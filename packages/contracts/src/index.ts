@@ -53,6 +53,8 @@ export interface AppConfig {
   redisUrl: string;
   workerHeartbeatIntervalMs: number;
   workerHeartbeatTtlSeconds: number;
+  workerJobLeaseDurationMs: number;
+  workerJobLeaseRenewalIntervalMs: number;
 }
 
 /**
@@ -97,6 +99,109 @@ export const MIN_JOB_PRIORITY = -1000;
 export const MAX_JOB_PRIORITY = 1000;
 
 /**
+ * Lifecycle status of a distributed worker lease.
+ */
+export type JobLeaseStatus = 'ACTIVE' | 'RELEASED' | 'EXPIRED';
+
+/**
+ * Immutable representation of a distributed worker job lease.
+ */
+export interface WorkerLease {
+  readonly id: string;
+  readonly jobId: string;
+  readonly workerId: string;
+  readonly status: JobLeaseStatus;
+  readonly durationMs: number;
+  readonly acquiredAt: Date;
+  readonly renewedAt: Date;
+  readonly expiresAt: Date;
+  readonly createdAt: Date;
+}
+
+/**
+ * Parameters for claiming a job lease.
+ */
+export interface ClaimJobOptions {
+  readonly jobId: string;
+  readonly workerId: string;
+  readonly durationMs: number;
+}
+
+/**
+ * Result of an atomic job lease claim attempt.
+ */
+export type ClaimJobResult =
+  | {
+      readonly status: 'ACQUIRED';
+      readonly lease: WorkerLease;
+      readonly isIdempotent?: boolean;
+    }
+  | {
+      readonly status: 'CONFLICT';
+      readonly reason: 'LEASE_ALREADY_HELD';
+      readonly currentOwnerId: string;
+      readonly expiresAt: Date;
+    }
+  | {
+      readonly status: 'NOT_CLAIMABLE';
+      readonly reason: 'JOB_NOT_FOUND' | 'JOB_NOT_CLAIMABLE';
+      readonly details?: string;
+    };
+
+/**
+ * Parameters for renewing an active job lease.
+ */
+export interface RenewLeaseOptions {
+  readonly leaseId: string;
+  readonly jobId: string;
+  readonly workerId: string;
+  readonly durationMs?: number;
+}
+
+/**
+ * Result of an atomic job lease renewal attempt.
+ */
+export type RenewLeaseResult =
+  | {
+      readonly status: 'RENEWED';
+      readonly lease: WorkerLease;
+    }
+  | {
+      readonly status: 'REJECTED';
+      readonly reason:
+        'LEASE_EXPIRED' | 'LEASE_NOT_FOUND' | 'LEASE_OWNER_MISMATCH' | 'LEASE_TOKEN_MISMATCH';
+      readonly details?: string;
+    };
+
+/**
+ * Parameters for releasing an active job lease.
+ */
+export interface ReleaseLeaseOptions {
+  readonly leaseId: string;
+  readonly jobId: string;
+  readonly workerId: string;
+}
+
+/**
+ * Result of an atomic job lease release attempt.
+ */
+export type ReleaseLeaseResult =
+  | {
+      readonly status: 'RELEASED';
+      readonly leaseId: string;
+      readonly jobId: string;
+    }
+  | {
+      readonly status: 'REJECTED';
+      readonly reason:
+        | 'LEASE_NOT_FOUND'
+        | 'LEASE_OWNER_MISMATCH'
+        | 'LEASE_TOKEN_MISMATCH'
+        | 'LEASE_ALREADY_INACTIVE';
+      readonly details?: string;
+    };
+
+/**
  * Status of a scheduler placement decision.
  */
 export type ScheduleDecisionStatus = 'SCHEDULED' | 'UNSCHEDULABLE';
@@ -104,7 +209,8 @@ export type ScheduleDecisionStatus = 'SCHEDULED' | 'UNSCHEDULABLE';
 /**
  * Standard reasons explaining why a job cannot be scheduled on any worker.
  */
-export type UnschedulableReason = 'NO_ELIGIBLE_WORKER' | 'INVALID_JOB_REQUIREMENTS';
+export type UnschedulableReason =
+  'NO_ELIGIBLE_WORKER' | 'INVALID_JOB_REQUIREMENTS' | 'LEASE_CONFLICT';
 
 /**
  * Explainable result when a job is successfully matched and assigned to a worker.
@@ -117,6 +223,7 @@ export interface ScheduledDecision {
   readonly eligibleWorkerCount: number;
   readonly priority?: number;
   readonly reason?: string;
+  readonly lease?: WorkerLease;
 }
 
 /**

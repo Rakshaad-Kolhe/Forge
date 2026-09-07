@@ -36,6 +36,7 @@ Forge V2 is designed as a distributed system composed of:
 - **PR 09: Worker Capability & Resource Matching (Completed)**: Pure, deterministic placement eligibility layer (`matchesWorker`, `filterEligibleWorkers`), job execution requirements, explainable failure diagnostics, and PostgreSQL persistence.
 - **PR 10: Scheduler Foundation & Deterministic Worker Selection (Completed)**: First-class scheduler service (`@forge/scheduler`), operational eligibility (`READY + ALIVE`), deterministic baseline worker selection policy (`DeterministicFirstEligible`), explainable placement decisions, and unacknowledged queue recoverability.
 - **PR 11: Priority Scheduling & Deterministic Job Ordering (Completed)**: Bounded job priority model `[-1000, 1000]`, PostgreSQL persistence with CHECK constraint, `HighestPriorityFirstPolicy` with canonical alphanumeric tie-breaking, non-blocking unschedulable semantics, prioritized batch evaluation, and FIFO queue decoupling.
+- **PR 12: Distributed Worker Leases & Job Claiming (Completed)**: Authoritative PostgreSQL job ownership (`worker_leases` table), partial unique index for single-active-lease exclusivity, atomic claim/renew/release operations, database clock time authority, worker crash recovery via lease expiration, queue visibility timeout preservation, and 10-contestant concurrent claim race verification.
 
 ---
 
@@ -54,6 +55,7 @@ Forge V2 is designed as a distributed system composed of:
 - **[Worker Registration & Heartbeat Specification](workers.md)**
 - **[Worker Capability & Resource Matching Specification](resource-matching.md)**
 - **[Task Scheduler & Deterministic Worker Selection Specification](scheduler.md)**
+- **[Distributed Worker Leases & Job Claiming Specification](leases.md)**
 - **[Architecture Glossary](glossary.md)**
 - **[Architectural Invariants Catalog](invariants.md)**
 - **[Service Boundaries Specification](boundaries.md)**

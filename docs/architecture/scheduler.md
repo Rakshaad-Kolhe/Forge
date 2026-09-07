@@ -6,11 +6,10 @@ The **Scheduler Service (`apps/scheduler`)** is a first-class service within For
 
 Forge decouples scheduling policy from job claiming, leases, and worker execution. The scheduler's sole responsibility is answering:
 
-> **"Given this job and the workers currently visible to me, which eligible worker does my current scheduling policy select?"**
+> **"Given this job and the workers currently visible to me, which eligible worker does my current scheduling policy select, and can that worker atomically acquire an exclusive lease?"**
 
 It explicitly does **NOT** answer:
 
-- _"Does this worker own the job?"_ (Deferred to future distributed lease/claim mechanism)
 - _"Can this worker reserve the hardware capacity?"_ (Deferred to future resource accounting)
 - _"Has this worker started running the job?"_ (Deferred to worker daemon execution)
 - _"Will this job execute exactly once?"_ (Non-goal; Forge guarantees at-least-once delivery with idempotent execution)
@@ -34,10 +33,10 @@ PR 09 Capability / Resource Matcher
 PR 10 Deterministic Selection (DeterministicFirstEligible)
     │
     ▼
-Scheduling Decisions (SCHEDULED vs UNSCHEDULABLE with Non-Blocking Semantics)
+PR 12 Distributed Lease Claiming (PgWorkerLeaseRepository)
     │
     ▼
-Future PR: Distributed Lease / Claim
+Scheduling Decisions (SCHEDULED with WorkerLease vs UNSCHEDULABLE with LEASE_CONFLICT)
     │
     ▼
 Future PR: Worker Daemon Execution
@@ -196,36 +195,35 @@ When the scheduler consumes job messages from `@forge/queue` via `scheduler.sche
 - Messages are dequeued with an active visibility timeout.
 - The scheduler inspects the messages, sorts them by priority, and evaluates placement against candidate workers.
 - **CRITICAL**: The scheduler intentionally does **NOT** call `queue.acknowledge(messageId)`.
-- A scheduling decision is not a job claim or lease. If a worker crashes, or if the scheduler restarts, or if the job is unschedulable, messages remain safely in Redis in-flight storage until reclaimed when their visibility timeout expires.
-- Permanent message removal (ACK) is deferred to the future claim and execution phase.
+- A scheduling decision and lease claim does not mean execution completion. If a worker crashes, or if the scheduler restarts, or if the job is unschedulable, messages remain safely in Redis in-flight storage until reclaimed when their visibility timeout expires.
+- Permanent message removal (ACK) is deferred to the future attempt execution completion phase.
 
 ---
 
-## 7. Critical Distributed-Systems Limitations
+## 7. Distributed-Systems Ownership Guarantees
 
-### No Distributed Scheduler Serialization
+### Global Serialized Ownership via PostgreSQL Leases
 
-PR 11 provides **deterministic local priority scheduling policy**, NOT globally serialized scheduling. If multiple scheduler instances run concurrently:
+PR 12 establishes **authoritative distributed job ownership** via PostgreSQL worker leases:
 
 ```text
-Scheduler A ──► selects Worker X for Job Y
-Scheduler B ──► may concurrently observe Job Y or select Worker X
+Scheduler A ──► selects Worker X ──► acquires ACTIVE lease in PostgreSQL
+Scheduler B ──► selects Worker Y ──► rejected with LEASE_CONFLICT in PostgreSQL
 ```
 
-This is an intentional boundary. Global serialized ownership will be introduced via distributed lease allocation in PR 12.
+Mutual exclusivity is enforced authoritatively by PostgreSQL row-level locks (`SELECT FOR UPDATE`) and the partial unique index `uq_worker_leases_active_job`.
 
 ### No Worker Capacity Reservation
 
-Selecting a worker does **NOT** mutate the worker's capacity or decrement available resources. Multiple jobs scheduled in sequence will all observe the worker's full capacity until active resource accounting is introduced.
+Selecting a worker and acquiring a lease does **NOT** mutate the worker's capacity or decrement available resources. Multiple jobs scheduled in sequence will all observe the worker's full capacity until active resource accounting is introduced in future PRs.
 
 ---
 
-## 8. Explicit Non-Goals for PR 11
+## 8. Explicit Non-Goals for PR 12
 
 The following features are intentionally out of scope:
 
 - **No Fairness / Starvation Prevention**: No aging, priority decay, round-robin, or anti-starvation boost.
-- **No Worker Leases / Job Claims**: No compare-and-swap tokens, lease renewal, or expiration (deferred to PR 12).
-- **No Job State Mutation to RUNNING**: Selecting a worker does not mutate persistent job status to RUNNING.
+- **No Job State Mutation to RUNNING**: Claiming a job does not mutate persistent job status to RUNNING (job remains QUEUED while owned).
 - **No Active Resource Accounting**: No tracking of active CPU cores, memory bytes, or job counts.
-- **No Job Execution**: No Docker, shell, or Kubernetes execution.
+- **No Job Execution**: No Docker, shell, or Kubernetes execution (deferred to PR 13+).

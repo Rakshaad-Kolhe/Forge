@@ -3,6 +3,7 @@ import { PgJobAttemptRepository } from './repositories/pg-job-attempt-repository
 import { PgJobRepository } from './repositories/pg-job-repository.js';
 import { PgPipelineRepository } from './repositories/pg-pipeline-repository.js';
 import { PgPipelineRunRepository } from './repositories/pg-pipeline-run-repository.js';
+import { PgWorkerLeaseRepository } from './repositories/pg-worker-lease-repository.js';
 import type { DatabasePool } from './types.js';
 
 export interface TransactionContext {
@@ -11,6 +12,7 @@ export interface TransactionContext {
   pipelineRuns: PgPipelineRunRepository;
   jobs: PgJobRepository;
   jobAttempts: PgJobAttemptRepository;
+  workerLeases: PgWorkerLeaseRepository;
 }
 
 /**
@@ -34,6 +36,7 @@ export async function withTransaction<T>(
       pipelineRuns: new PgPipelineRunRepository(client),
       jobs: new PgJobRepository(client),
       jobAttempts: new PgJobAttemptRepository(client),
+      workerLeases: new PgWorkerLeaseRepository(client),
     };
 
     const result = await callback(txContext);

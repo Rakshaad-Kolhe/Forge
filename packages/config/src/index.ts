@@ -44,11 +44,30 @@ const configSchema = z
       .default('15')
       .transform(Number)
       .pipe(z.number().int().min(1, 'WORKER_HEARTBEAT_TTL_SECONDS must be at least 1 second')),
+    WORKER_JOB_LEASE_DURATION_MS: z
+      .string()
+      .regex(/^\d+$/, 'WORKER_JOB_LEASE_DURATION_MS must be a valid integer')
+      .default('30000')
+      .transform(Number)
+      .pipe(z.number().int().min(1000, 'WORKER_JOB_LEASE_DURATION_MS must be at least 1000ms')),
+    WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS: z
+      .string()
+      .regex(/^\d+$/, 'WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS must be a valid integer')
+      .default('10000')
+      .transform(Number)
+      .pipe(
+        z.number().int().min(500, 'WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS must be at least 500ms'),
+      ),
   })
   .refine((data) => data.WORKER_HEARTBEAT_TTL_SECONDS * 1000 > data.WORKER_HEARTBEAT_INTERVAL_MS, {
     message:
       'WORKER_HEARTBEAT_TTL_SECONDS (in ms) must be greater than WORKER_HEARTBEAT_INTERVAL_MS',
     path: ['WORKER_HEARTBEAT_TTL_SECONDS'],
+  })
+  .refine((data) => data.WORKER_JOB_LEASE_DURATION_MS > data.WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS, {
+    message:
+      'WORKER_JOB_LEASE_DURATION_MS must be greater than WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS',
+    path: ['WORKER_JOB_LEASE_DURATION_MS'],
   });
 
 export type RawConfigInput = Record<string, string | undefined>;
@@ -81,6 +100,8 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     REDIS_URL,
     WORKER_HEARTBEAT_INTERVAL_MS,
     WORKER_HEARTBEAT_TTL_SECONDS,
+    WORKER_JOB_LEASE_DURATION_MS,
+    WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS,
   } = result.data;
 
   return {
@@ -91,5 +112,7 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     redisUrl: REDIS_URL,
     workerHeartbeatIntervalMs: WORKER_HEARTBEAT_INTERVAL_MS,
     workerHeartbeatTtlSeconds: WORKER_HEARTBEAT_TTL_SECONDS,
+    workerJobLeaseDurationMs: WORKER_JOB_LEASE_DURATION_MS,
+    workerJobLeaseRenewalIntervalMs: WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS,
   };
 }
