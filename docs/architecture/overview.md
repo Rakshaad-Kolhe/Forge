@@ -26,7 +26,12 @@ Forge V2 is designed as a distributed system composed of:
 ## 3. Current Implementation Status
 
 - **PR 01: Repository Foundation & Architecture Contract (Completed)**: Monorepo workspaces, strict TypeScript configuration, service shells, shared packages (`@forge/contracts`, `@forge/config`, `@forge/logging`), baseline testing, and linting.
-- **PR 02: Architecture Decision Records & Engineering Contracts (Current)**: Formal architectural decision records (`ADR-001` through `ADR-005`), architectural glossary, and invariants catalog.
+- **PR 02: Architecture Decision Records & Engineering Contracts (Completed)**: Formal architectural decision records (`ADR-001` through `ADR-005`), architectural glossary, and invariants catalog.
+- **PR 03: Pipeline Domain Model & State Machines (Completed)**: Pure domain core for Pipelines, PipelineRuns, Jobs, Attempts, DAG dependency graph, cycle detection, and explicit state machines.
+- **PR 04: PostgreSQL Persistence Foundation (Completed)**: PostgreSQL connection management, schema migrations, and typed repository layer.
+- **PR 05: Transactional Domain Persistence & State Integrity (Completed)**: Protected persistence boundary, terminal state immutability, state machine enforcement, and atomic aggregate persistence.
+- **PR 06: Redis Coordination Foundation (Completed)**: Managed Redis client, active health checking, key-value primitives, TTL, atomic coordination, and real Redis integration tests.
+- **PR 07: Reliable FIFO Job Queue (Completed)**: Redis-backed FIFO queue abstraction (`@forge/queue`), atomic dispatch, in-flight visibility tracking, unacknowledged crash recovery, and competing consumer coordination.
 
 ---
 
@@ -37,6 +42,11 @@ Forge V2 is designed as a distributed system composed of:
 - **[ADR-003: Redis for Transient Distributed Coordination](decisions/ADR-003-redis-coordination.md)**
 - **[ADR-004: At-Least-Once Delivery and Idempotent State Transitions](decisions/ADR-004-at-least-once-delivery.md)**
 - **[ADR-005: Ephemeral Execution Environments](decisions/ADR-005-ephemeral-execution.md)**
+- **[Pipeline Domain Model Specification](domain-model.md)**
+- **[PostgreSQL Persistence Specification](database.md)**
+- **[Transactional Domain Persistence Specification](persistence-integrity.md)**
+- **[Redis Coordination Foundation Specification](redis.md)**
+- **[Reliable FIFO Job Queue Specification](queue.md)**
 - **[Architecture Glossary](glossary.md)**
 - **[Architectural Invariants Catalog](invariants.md)**
 - **[Service Boundaries Specification](boundaries.md)**
@@ -45,22 +55,24 @@ Forge V2 is designed as a distributed system composed of:
 
 ## 5. Intended Evolution Path
 
-```
+```text
 PR 01: Repository Foundation & Architecture Contract (Completed)
   │
-  ├──► PR 02: Architecture Decision Records & Engineering Contracts (Current)
+  ├──► PR 02: Architecture Decision Records & Engineering Contracts (Completed)
   │
-  ├──► PR 03: Core Domain Model & Database Schema (PostgreSQL migrations)
+  ├──► PR 03: Pipeline Domain Model & State Machines (Completed)
   │
-  ├──► PR 04: Queue Architecture & Redis State Coordination
+  ├──► PR 04: PostgreSQL Persistence Foundation (Completed)
   │
-  ├──► PR 05: Scheduler Engine & DAG Execution Graphs
+  ├──► PR 05: Transactional Domain Persistence & State Integrity (Completed)
   │
-  ├──► PR 06: Worker Runtime & Container Executor (Docker/K8s)
+  ├──► PR 06: Redis Coordination Foundation (Completed)
   │
-  ├──► PR 07: API Ingress, Auth & Webhook Processing
+  ├──► PR 07: Reliable FIFO Job Queue (Completed)
   │
-  ├──► PR 08: Real-Time Streaming & WebSocket Monitoring
+  ├──► PR 08: Distributed Task Scheduler & Execution Engine (Planned)
   │
-  └──► PR 09: CLI Workflows & Production Observability
+  ├──► PR 09: Worker Runtime, Heartbeats & Container Executors (Planned)
+  │
+  └──► PR 10: API Ingress, Auth & Production Observability (Planned)
 ```
