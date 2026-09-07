@@ -91,4 +91,75 @@ describe('Worker Service Shell', () => {
     expect(deregistered).toContain('test-worker-1');
     expect(worker.getStatus()).toBe('OFFLINE');
   });
+
+  it('manages distributed leases: claims, renews, releases, and gracefully releases on stop', async () => {
+    const mockLease = {
+      id: 'lease-worker-001',
+      jobId: 'job-worker-001',
+      workerId: 'worker-leased',
+      status: 'ACTIVE' as const,
+      durationMs: 30000,
+      acquiredAt: new Date(),
+      renewedAt: new Date(),
+      expiresAt: new Date(Date.now() + 30000),
+      createdAt: new Date(),
+    };
+
+    const mockLeaseRepo = {
+      claim: vi.fn().mockResolvedValue({
+        status: 'ACQUIRED',
+        lease: mockLease,
+        isIdempotent: false,
+      }),
+      renew: vi.fn().mockResolvedValue({
+        status: 'RENEWED',
+        lease: { ...mockLease, renewedAt: new Date(), expiresAt: new Date(Date.now() + 45000) },
+      }),
+      release: vi.fn().mockResolvedValue({
+        status: 'RELEASED',
+        leaseId: 'lease-worker-001',
+        jobId: 'job-worker-001',
+      }),
+      findActiveByJobId: vi.fn(),
+      findById: vi.fn(),
+      findByWorkerId: vi.fn(),
+      reclaimExpiredLeases: vi.fn(),
+    };
+
+    const worker = startWorker({
+      workerId: 'worker-leased',
+      leaseRepository: mockLeaseRepo,
+      defaultLeaseDurationMs: 30000,
+    });
+
+    // 1. Claim job
+    const claimRes = await worker.claimJob('job-worker-001');
+    expect(claimRes.status).toBe('ACQUIRED');
+    expect(mockLeaseRepo.claim).toHaveBeenCalledWith({
+      jobId: 'job-worker-001',
+      workerId: 'worker-leased',
+      durationMs: 30000,
+    });
+    expect(worker.getActiveLeases()).toHaveLength(1);
+    expect(worker.getActiveLeases()[0]?.id).toBe('lease-worker-001');
+
+    // 2. Renew lease
+    const renewRes = await worker.renewLease('lease-worker-001', 'job-worker-001', 45000);
+    expect(renewRes.status).toBe('RENEWED');
+    expect(mockLeaseRepo.renew).toHaveBeenCalledWith({
+      leaseId: 'lease-worker-001',
+      jobId: 'job-worker-001',
+      workerId: 'worker-leased',
+      durationMs: 45000,
+    });
+
+    // 3. Graceful stop releases active lease
+    await worker.stop();
+    expect(mockLeaseRepo.release).toHaveBeenCalledWith({
+      leaseId: 'lease-worker-001',
+      jobId: 'job-worker-001',
+      workerId: 'worker-leased',
+    });
+    expect(worker.getActiveLeases()).toHaveLength(0);
+  });
 });

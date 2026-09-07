@@ -1,36 +1,43 @@
-# PR 11: Priority Scheduling & Deterministic Job Ordering
+# PR 12: Distributed Worker Leases & Job Claiming
 
 ## Summary
 
-This pull request implements **PR 11: Priority Scheduling & Deterministic Job Ordering** for Forge V2. It extends the deterministic scheduler foundation established in PR 10 with explicit, bounded job priority and deterministic job ordering (`HighestPriorityFirstPolicy`), ensuring higher-priority eligible jobs receive placement before lower-priority jobs while preserving existing capability/resource matching and worker selection boundaries.
+This pull request implements **PR 12: Distributed Worker Leases & Job Claiming** for Forge V2. It establishes Forge's distributed job ownership foundation: a selected worker atomically claims a job through a renewable, time-bounded lease backed authoritatively by PostgreSQL.
 
 ---
 
-## Architectural Objectives & Non-Blocking Semantics
+## Key Architectural Decisions & Guarantees
 
-1. **Priority Domain Model**:
-   - Job priority is a strictly bounded integer: `[-1000, 1000]` with `DEFAULT_JOB_PRIORITY = 0`.
-   - Priority is declared on `PipelineStep.priority`, propagated deterministically during `PipelineRun.create()` onto `Job.priority`, and persisted in PostgreSQL under `jobs.priority`.
-   - Full domain validation (`checkJobPriorityValidity`, `validateJobPriority`, `InvalidJobPriorityError`) rejects out-of-range or non-integer values.
+1. **PostgreSQL as Authoritative Source of Truth for Leases**:
+   - Explicitly rejects lock-free dual writes or Redis-as-authoritative-lock architectures for job ownership.
+   - Authoritative lease state is stored in table `worker_leases` created via migration `005_worker_leases.sql`.
+   - Single-active-lease exclusivity is enforced by partial unique index:
+     ```sql
+     CREATE UNIQUE INDEX uq_worker_leases_active_job
+       ON worker_leases(job_id)
+       WHERE status = 'ACTIVE';
+     ```
 
-2. **Database Persistence & Integrity**:
-   - Migration `004_job_priority.sql` adds column `priority INTEGER NOT NULL DEFAULT 0` with table check constraint `chk_jobs_priority CHECK (priority >= -1000 AND priority <= 1000)` and index `idx_jobs_priority ON jobs(priority DESC)`.
-   - `PgJobRepository` persists and reconstructs `priority` accurately across `save`, `findById`, and `findByPipelineRunId`.
+2. **Atomic Claim, Renewal, and Release**:
+   - `claim()`: Acquires an exclusive row lock on the job (`SELECT ... FOR UPDATE`), checks existing lease state, evaluates expiration according to DB `NOW()`, and inserts new active lease or returns idempotent success / conflict.
+   - `renew()`: Atomic `UPDATE` checking `status = 'ACTIVE'`, owner `worker_id`, and `expires_at > NOW()`. Stale owners touch 0 rows and are rejected.
+   - `release()`: Atomic transition to `RELEASED`.
+   - `reclaimExpiredLeases()`: Bulk transition of expired active leases to `EXPIRED`.
 
-3. **Deterministic Job Ordering Policy (`HighestPriorityFirstPolicy`)**:
-   - Compares jobs by priority descending: `(b.priority ?? 0) - (a.priority ?? 0)`.
-   - Canonical tie-breaking: when priorities match, ties are broken deterministically by job ID in ascending code-point order (`(idA < idB ? -1 : (idA > idB ? 1 : 0))`).
-   - Permutation-invariant: shuffling candidate jobs yields the identical evaluation sequence and selected placements.
+3. **Time Authority & Clock Invariant**:
+   - The PostgreSQL database clock (`NOW()`) is the sole authority for lease expiration.
+   - Expiration timestamps are calculated directly in PostgreSQL: `NOW() + ($durationMs * INTERVAL '1 millisecond')`.
+   - Workers never supply local timestamps for lease evaluations, eliminating clock skew vulnerabilities.
 
-4. **Non-Blocking Unschedulable Semantics**:
-   - If a higher-priority job cannot be scheduled (e.g. requires 64 CPU cores when only 4-core workers exist), it is marked `UNSCHEDULABLE` with explainable failure diagnostics.
-   - Evaluation proceeds immediately to the next highest priority jobs in the batch.
-   - An unschedulable high-priority job NEVER blocks lower-priority eligible jobs from being scheduled.
+4. **Distributed Failure Model & Recoverability**:
+   - When a worker crashes, its heartbeat in Redis stops and its lease expires in PostgreSQL.
+   - Queue messages remain in visibility timeout without premature acknowledgement (`ACK`), preserving recoverability.
+   - An expired lease is automatically transitioned to `EXPIRED` upon replacement claim or background sweep.
+   - Stale workers that revive cannot renew or release expired/replaced leases.
 
-5. **Decoupled Queue Transport**:
-   - Strict FIFO queue semantics (`LPUSH` / `RPOP` in Redis) are preserved in `@forge/queue`.
-   - Priority is a scheduler policy concern, not a transport concern.
-   - `ForgeScheduler.scheduleNextBatch` dequeues batches and evaluates them in priority order without prematurely acknowledging messages, preserving unacknowledged recoverability under visibility timeout.
+5. **Concurrency & Race Condition Elimination**:
+   - Concurrent claim requests for the same unleased job are serialized via PostgreSQL row locks and enforced by the partial unique index.
+   - Verified with 10 concurrent claimants: exactly 1 winner (`ACQUIRED`, `isIdempotent: false`) and 9 conflicts (`CONFLICT`, `LEASE_ALREADY_HELD`).
 
 ---
 
@@ -38,66 +45,69 @@ This pull request implements **PR 11: Priority Scheduling & Deterministic Job Or
 
 ### 1. Contracts Package (`packages/contracts`)
 
-- Added priority constants: `DEFAULT_JOB_PRIORITY = 0`, `MIN_JOB_PRIORITY = -1000`, `MAX_JOB_PRIORITY = 1000`.
-- Added optional `priority?: number` field to `ScheduledDecision` and `UnschedulableDecision`.
+- Added `JobLeaseStatus = 'ACTIVE' | 'RELEASED' | 'EXPIRED'`.
+- Added `WorkerLease` interface with timestamps and audit metadata.
+- Added `ClaimJobOptions`, `ClaimJobResult`, `RenewLeaseOptions`, `RenewLeaseResult`, `ReleaseLeaseOptions`, `ReleaseLeaseResult`.
+- Updated `ScheduledDecision` to optionally attach `lease?: WorkerLease`.
+- Added `'LEASE_CONFLICT'` to `UnschedulableReason`.
+- Added `workerJobLeaseDurationMs` and `workerJobLeaseRenewalIntervalMs` to `AppConfig`.
 
-### 2. Pipeline Domain Package (`packages/pipeline`)
+### 2. Configuration Package (`packages/config`)
 
-- `InvalidJobPriorityError extends PipelineValidationError`.
-- Pure validator functions: `checkJobPriorityValidity` and `validateJobPriority`.
-- Added `priority` to `PipelineStep`, `Job`, and serialization representations (`PipelineStepSerialized`, `JobSerialized`).
-- Updated `PipelineRun.create()` to copy step priority to job priority upon run creation.
-- 16 new unit tests in `priority.test.ts`.
+- Added `WORKER_JOB_LEASE_DURATION_MS` (default `30000`, min `1000`).
+- Added `WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS` (default `10000`, min `500`).
+- Added refinement rule ensuring `durationMs > renewalIntervalMs`.
+- Unit tests covering default values, valid overrides, and invariant violations.
 
 ### 3. Database Package (`packages/database`)
 
-- Migration `004_job_priority.sql` adding column, check constraint, and index.
-- Registered migration in `migrator.ts`.
-- Added `priority?: number` to `JobRow`.
-- Updated `PgJobRepository.save()`, `findById()`, `findByPipelineRunId()`, and `mapRowToDomain()` to persist and rehydrate priority.
-- Integration tests in `repositories.test.ts` verifying round-trip persistence and database CHECK constraint enforcement.
+- Created migration `005_worker_leases.sql` and registered in `migrator.ts`.
+- Updated `resetDatabase` to cascade drop `worker_leases`.
+- Added `WorkerLeaseRow` to `types.ts`.
+- Created `WorkerLeaseRepository` contract and `PgWorkerLeaseRepository` implementation with atomic `claim`, `renew`, `release`, `findActiveByJobId`, `findById`, `findByWorkerId`, and `reclaimExpiredLeases`.
+- Added `workerLeases` to `TransactionContext`.
+- Integration tests (16 tests) in `worker-lease-repository.test.ts` covering lifecycle, idempotent claiming, conflict rejection, renewal, release, expiry reclamation, 10-contestant concurrency races, and stale lease owner replacement.
 
 ### 4. Scheduler Service (`apps/scheduler`)
 
-- Created `job-policy.ts`:
-  - `JobOrderingPolicy` interface.
-  - `compareJobPriority` comparator.
-  - `orderJobsByPriority` helper.
-  - `HighestPriorityFirstPolicy` class and `highestPriorityFirstPolicy` singleton.
-- Updated `scheduler.ts`:
-  - `evaluatePlacement` attaches `priority` to all scheduling decisions.
-  - Added pure batch evaluator `evaluatePrioritizedWork`.
-  - Added `ForgeScheduler.schedulePrioritized(jobsOrIds)`.
-  - Added `ForgeScheduler.scheduleNextBatch(queue, batchSize, options)`.
-- Re-exported `job-policy.js` from `index.ts`.
-- Comprehensive unit, integration, and smoke tests.
+- Updated `SchedulerOptions` with `leaseRepository?: WorkerLeaseRepository` and `leaseDurationMs?: number`.
+- In `ForgeScheduler.schedule()`, upon selecting an eligible worker, atomically claims a worker lease when `leaseRepository` is configured.
+- Attaches `lease` to `ScheduledDecision` on success; returns `UNSCHEDULABLE` (`LEASE_CONFLICT`) on conflict.
+- In `schedulePrioritized()`, claims leases for placed jobs in priority order with non-blocking conflict semantics.
+- Preserves unacknowledged queue delivery under visibility timeout without calling ACK upon scheduling/claiming.
 
-### 5. Architectural Documentation (`docs/architecture/`)
+### 5. Worker Service Shell (`apps/worker`)
 
-- Updated `docs/architecture/scheduler.md` with priority scheduling architecture, tie-breaking rules, non-blocking unschedulable semantics, and updated non-goals.
-- Updated `docs/architecture/overview.md` with PR 11 completion and evolution path.
-- Updated `docs/architecture/glossary.md` with definitions for `Job Priority`, `HighestPriorityFirst`, and `Non-Blocking Unschedulable Semantics`.
-- Updated `README.md`.
+- Added `leaseRepository?: WorkerLeaseRepository` and `defaultLeaseDurationMs?: number` to `StartWorkerOptions`.
+- Added `claimJob`, `renewLease`, `releaseLease`, `getActiveLeases` to `WorkerShell`.
+- Implemented graceful release of all held active leases upon worker `stop()`.
+- Unit tests covering lease lifecycle and graceful shutdown release.
 
----
+### 6. Smoke Tests & Verification (`apps/scheduler/src/lease.smoke.test.ts`)
 
-## Explicit Non-Goals for PR 11
+- **Section 51**: 20-step sequential verification against live PostgreSQL and Redis.
+- **Section 52**: 10 concurrent claimants racing simultaneously on live PostgreSQL.
 
-- **No Fairness / Starvation Prevention**: No aging, priority decay, round-robin, or anti-starvation boost.
-- **No Worker Capacity Reservation**: Selecting a worker does not mutate worker capacity or decrement available resources.
-- **No Worker Leases / Job Claims**: Deferred to PR 12.
-- **No Job State Mutation to RUNNING**: Selecting a worker does not mark persistent job status as RUNNING.
-- **No Active Resource Accounting**: No tracking of active CPU cores, memory bytes, or job counts.
-- **No Job Execution**: No Docker, shell, or Kubernetes execution.
+### 7. Documentation
+
+- Created `docs/architecture/leases.md`.
+- Updated `docs/architecture/overview.md`, `docs/architecture/glossary.md`, `docs/architecture/invariants.md`, `docs/architecture/scheduler.md`, and `README.md`.
 
 ---
 
-## Verification Evidence
+## Test Execution Summary
 
-- **Linting**: `npm run lint` passed (0 errors, 0 warnings).
-- **Formatting**: `npm run format:check` passed (All matched files use Prettier code style).
-- **Typechecking**: `npm run typecheck` passed (`tsc -b` with 0 errors).
-- **Monorepo Build**: `npm run build` passed across all 11 workspaces (`contracts`, `config`, `logging`, `pipeline`, `database`, `redis`, `queue`, `worker-registry`, `api`, `scheduler`, `worker`, `cli`, `web`).
-- **Test Suite**: `npm test` executed across all workspaces:
-  - **29 test files passed (100%)**
-  - **286 tests passed (100%)**
+All test suites pass cleanly across all workspaces:
+
+- `@forge/config`: 8 tests passed
+- `@forge/contracts`: types and interfaces verified
+- `@forge/pipeline`: 100 tests passed
+- `@forge/database`: 49 integration tests passed (including 16 worker lease tests)
+- `@forge/redis`: 15 integration tests passed
+- `@forge/queue`: 8 integration tests passed
+- `@forge/worker-registry`: 15 integration tests passed
+- `@forge/scheduler`: 72 tests passed (including Section 51 & 52 live smoke test matrix)
+- `@forge/worker`: 3 tests passed
+- `@forge/api`: 3 tests passed
+- `@forge/cli`: 2 tests passed
+- `@forge/web`: 1 test passed

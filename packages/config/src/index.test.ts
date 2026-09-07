@@ -12,6 +12,8 @@ describe('loadConfig', () => {
       redisUrl: 'redis://127.0.0.1:6379',
       workerHeartbeatIntervalMs: 5000,
       workerHeartbeatTtlSeconds: 15,
+      workerJobLeaseDurationMs: 30000,
+      workerJobLeaseRenewalIntervalMs: 10000,
     });
   });
 
@@ -24,6 +26,8 @@ describe('loadConfig', () => {
       REDIS_URL: 'redis://custom:custom@localhost:6380',
       WORKER_HEARTBEAT_INTERVAL_MS: '2000',
       WORKER_HEARTBEAT_TTL_SECONDS: '10',
+      WORKER_JOB_LEASE_DURATION_MS: '45000',
+      WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS: '15000',
     });
     expect(config).toEqual({
       nodeEnv: 'production',
@@ -33,6 +37,8 @@ describe('loadConfig', () => {
       redisUrl: 'redis://custom:custom@localhost:6380',
       workerHeartbeatIntervalMs: 2000,
       workerHeartbeatTtlSeconds: 10,
+      workerJobLeaseDurationMs: 45000,
+      workerJobLeaseRenewalIntervalMs: 15000,
     });
   });
 
@@ -79,6 +85,15 @@ describe('loadConfig', () => {
       loadConfig({
         WORKER_HEARTBEAT_INTERVAL_MS: '10000', // 10s
         WORKER_HEARTBEAT_TTL_SECONDS: '5', // 5s < 10s
+      });
+    }).toThrow(ConfigValidationError);
+  });
+
+  it('fails clearly when WORKER_JOB_LEASE_DURATION_MS is less than or equal to renewal interval', () => {
+    expect(() => {
+      loadConfig({
+        WORKER_JOB_LEASE_DURATION_MS: '10000',
+        WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS: '15000', // 15s > 10s
       });
     }).toThrow(ConfigValidationError);
   });

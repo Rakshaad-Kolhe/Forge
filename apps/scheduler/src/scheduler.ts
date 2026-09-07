@@ -18,6 +18,7 @@ import type { JobQueue, QueueDelivery } from '@forge/queue';
 import { JobNotFoundError, JobSourceError, WorkerSourceError } from './errors.js';
 import { highestPriorityFirstPolicy } from './job-policy.js';
 import { deterministicFirstEligiblePolicy, getWorkerCandidateId } from './policy.js';
+import type { WorkerLeaseRepository } from '@forge/database';
 import type {
   EligibilityMatcher,
   JobOrderingPolicy,
@@ -234,6 +235,8 @@ export class ForgeScheduler implements Scheduler {
   private readonly selectionPolicy: WorkerSelectionPolicy;
   private readonly jobPolicy: JobOrderingPolicy;
   private readonly matcher: EligibilityMatcher;
+  private readonly leaseRepository?: WorkerLeaseRepository;
+  private readonly leaseDurationMs: number;
   private readonly logger?: Logger;
 
   constructor(options?: SchedulerOptions) {
@@ -242,11 +245,15 @@ export class ForgeScheduler implements Scheduler {
     this.selectionPolicy = options?.selectionPolicy ?? deterministicFirstEligiblePolicy;
     this.jobPolicy = options?.jobPolicy ?? highestPriorityFirstPolicy;
     this.matcher = options?.matcher ?? filterEligibleWorkers;
+    this.leaseRepository = options?.leaseRepository;
+    this.leaseDurationMs = options?.leaseDurationMs ?? 30000;
     this.logger = options?.logger;
   }
 
   /**
    * Schedules a single job either directly by domain object or by ID via configured JobSource.
+   * If an eligible worker is selected and a leaseRepository is configured, atomically claims
+   * a time-bounded distributed worker lease.
    */
   public async schedule(jobOrId: Job | string): Promise<ScheduleDecision> {
     let job: Job;
@@ -294,23 +301,32 @@ export class ForgeScheduler implements Scheduler {
 
     const decision = evaluatePlacement(job, candidates, this.selectionPolicy, this.matcher);
 
+    let finalDecision: ScheduleDecision = decision;
+    if (decision.status === 'SCHEDULED' && this.leaseRepository) {
+      finalDecision = await this.claimLeaseForDecision(decision);
+    }
+
     this.logger?.info('Scheduler placement evaluated', {
-      jobId: decision.jobId,
-      status: decision.status,
-      candidateWorkerCount: decision.candidateWorkerCount,
-      eligibleWorkerCount: decision.eligibleWorkerCount,
+      jobId: finalDecision.jobId,
+      status: finalDecision.status,
+      candidateWorkerCount: finalDecision.candidateWorkerCount,
+      eligibleWorkerCount: finalDecision.eligibleWorkerCount,
       policy: this.selectionPolicy.name,
-      ...(decision.status === 'SCHEDULED'
-        ? { selectedWorkerId: decision.workerId }
-        : { reason: decision.reason }),
+      ...(finalDecision.status === 'SCHEDULED'
+        ? {
+            selectedWorkerId: finalDecision.workerId,
+            ...(finalDecision.lease ? { leaseId: finalDecision.lease.id } : {}),
+          }
+        : { reason: finalDecision.reason }),
     });
 
-    return decision;
+    return finalDecision;
   }
 
   /**
    * Evaluates placement for a collection of jobs in priority order.
    * Jobs can be passed as domain Job instances or string job IDs.
+   * If a leaseRepository is configured, atomically claims worker leases for placed jobs.
    */
   public async schedulePrioritized(
     jobsOrIds: readonly (Job | string)[],
@@ -357,13 +373,40 @@ export class ForgeScheduler implements Scheduler {
       candidates = [];
     }
 
-    const result = evaluatePrioritizedWork(
+    const baseResult = evaluatePrioritizedWork(
       jobs,
       candidates,
       this.jobPolicy,
       this.selectionPolicy,
       this.matcher,
     );
+
+    let result = baseResult;
+    if (this.leaseRepository) {
+      const finalOrdered: ScheduleDecision[] = [];
+      const finalScheduled: ScheduledDecision[] = [];
+      const finalUnschedulable: UnschedulableDecision[] = [...baseResult.unschedulableDecisions];
+
+      for (const dec of baseResult.orderedDecisions) {
+        if (dec.status === 'SCHEDULED') {
+          const finalDec = await this.claimLeaseForDecision(dec);
+          finalOrdered.push(finalDec);
+          if (finalDec.status === 'SCHEDULED') {
+            finalScheduled.push(finalDec);
+          } else {
+            finalUnschedulable.push(finalDec);
+          }
+        } else {
+          finalOrdered.push(dec);
+        }
+      }
+
+      result = {
+        orderedDecisions: Object.freeze(finalOrdered),
+        scheduledDecisions: Object.freeze(finalScheduled),
+        unschedulableDecisions: Object.freeze(finalUnschedulable),
+      };
+    }
 
     this.logger?.info('Prioritized placement batch evaluated', {
       totalJobs: jobs.length,
@@ -374,6 +417,72 @@ export class ForgeScheduler implements Scheduler {
     });
 
     return result;
+  }
+
+  /**
+   * Helper to claim a worker lease for a placement decision.
+   */
+  private async claimLeaseForDecision(decision: ScheduledDecision): Promise<ScheduleDecision> {
+    if (!this.leaseRepository) {
+      return decision;
+    }
+
+    const claimResult = await this.leaseRepository.claim({
+      jobId: decision.jobId,
+      workerId: decision.workerId,
+      durationMs: this.leaseDurationMs,
+    });
+
+    if (claimResult.status === 'ACQUIRED') {
+      const decisionWithLease: ScheduledDecision = {
+        ...decision,
+        lease: claimResult.lease,
+      };
+      this.logger?.info('Scheduler placed job and acquired worker lease', {
+        jobId: decision.jobId,
+        workerId: decision.workerId,
+        leaseId: claimResult.lease.id,
+        expiresAt: claimResult.lease.expiresAt,
+      });
+      return decisionWithLease;
+    }
+
+    if (claimResult.status === 'CONFLICT') {
+      const unschedulable: UnschedulableDecision = {
+        status: 'UNSCHEDULABLE',
+        jobId: decision.jobId,
+        candidateWorkerCount: decision.candidateWorkerCount,
+        eligibleWorkerCount: decision.eligibleWorkerCount,
+        priority: decision.priority,
+        reason: 'LEASE_CONFLICT',
+        failureReasons: Object.freeze([
+          `Active lease already held by worker "${claimResult.currentOwnerId}" until ${claimResult.expiresAt.toISOString()}`,
+        ]),
+      };
+      this.logger?.warn('Scheduler placement failed due to active lease conflict', {
+        jobId: decision.jobId,
+        currentOwnerId: claimResult.currentOwnerId,
+        expiresAt: claimResult.expiresAt,
+      });
+      return unschedulable;
+    }
+
+    // NOT_CLAIMABLE
+    const unschedulable: UnschedulableDecision = {
+      status: 'UNSCHEDULABLE',
+      jobId: decision.jobId,
+      candidateWorkerCount: decision.candidateWorkerCount,
+      eligibleWorkerCount: decision.eligibleWorkerCount,
+      priority: decision.priority,
+      reason: 'LEASE_CONFLICT',
+      failureReasons: Object.freeze([claimResult.details ?? 'Job not claimable']),
+    };
+    this.logger?.warn('Scheduler placement failed: job not claimable', {
+      jobId: decision.jobId,
+      reason: claimResult.reason,
+      details: claimResult.details,
+    });
+    return unschedulable;
   }
 
   /**

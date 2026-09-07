@@ -91,3 +91,27 @@ The baseline deterministic priority scheduling policy in Forge V2. Ready jobs ar
 ### Non-Blocking Unschedulable Semantics
 
 The scheduling invariant that an unschedulable higher-priority job (e.g., unsatisfiable CPU/memory constraints) must never block eligible lower-priority jobs in a batch from being evaluated and assigned to compatible workers.
+
+### Worker Lease
+
+A renewable, time-bounded distributed ownership record persisted authoritatively in PostgreSQL (`worker_leases`) that grants a specific worker the exclusive right to execute a job for a specified duration.
+
+### Active Lease Exclusivity
+
+The fundamental distributed systems invariant enforcing that at most one active lease (`status = 'ACTIVE'`) may exist for a given job at any point in time. Enforced authoritatively via PostgreSQL partial unique index `uq_worker_leases_active_job`.
+
+### Lease Expiration
+
+The automatic transition of lease validity when current database time exceeds `expires_at`. An expired lease can no longer be renewed or released by its original owner, and permits a replacement worker to claim the job.
+
+### Lease Renewal
+
+The atomic operation extending an active lease's `expires_at` timestamp by its recorded owner prior to expiration, ensuring long-running tasks retain ownership without interruption.
+
+### Lease Conflict
+
+The condition where a worker attempts to claim or schedule a job that is already held by another active, unexpired lease owner. Results in status `CONFLICT` or `UNSCHEDULABLE` with reason `LEASE_CONFLICT`.
+
+### Reclaim Expired Leases
+
+A background or reactive sweep operation that scans the PostgreSQL database for leases with `status = 'ACTIVE'` and `expires_at <= NOW()` and transitions their status to `'EXPIRED'`.

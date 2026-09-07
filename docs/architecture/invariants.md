@@ -30,7 +30,11 @@ This document establishes the binding architectural invariants for Forge V2. The
 1. **Worker job claims must be time-bounded and enforced via explicit leases.** No worker may execute a job without an active, unexpired lease.
 2. **Worker leases must expire automatically if heartbeats cease.** A crashed or partitioned worker must not hold a lock indefinitely.
 3. **Reconciliation logic must exist to rebuild transient queue state from authoritative PostgreSQL records following a coordination outage.**
-4. **The scheduling plane must tolerate concurrent worker claims without race conditions**, using atomic primitives in Redis.
+4. **The scheduling plane must tolerate concurrent worker claims without race conditions**, backed authoritatively by atomic row locking (`FOR UPDATE`) and partial unique indexing in PostgreSQL.
+5. **PostgreSQL is the single authoritative source of truth for worker leases (`worker_leases`).** At most one active lease (`status = 'ACTIVE'`) is permitted per job at any point in time, enforced by the database partial unique index `uq_worker_leases_active_job`.
+6. **The PostgreSQL database server clock (`NOW()`) is the sole authority for lease expiration.** Worker client clocks must never be relied upon for lease validity or timestamp calculations.
+7. **Job claiming does not mutate domain job status to `RUNNING`.** Ownership is represented by an `ACTIVE` lease in `worker_leases`, decoupling ownership from attempt execution.
+8. **Queue messages remain in visibility timeout and are NOT acknowledged upon scheduling or lease acquisition.** Recoverability is preserved until execution outcome is finalized.
 
 ---
 

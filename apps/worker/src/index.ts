@@ -1,6 +1,13 @@
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { loadConfig } from '@forge/config';
+import type {
+  ClaimJobResult,
+  ReleaseLeaseResult,
+  RenewLeaseResult,
+  WorkerLease,
+} from '@forge/contracts';
+import type { WorkerLeaseRepository } from '@forge/database';
 import { createLogger, type Logger } from '@forge/logging';
 import {
   type WorkerRegistry,
@@ -15,6 +22,8 @@ export interface StartWorkerOptions {
   logger?: Logger;
   workerId?: string;
   registry?: WorkerRegistry;
+  leaseRepository?: WorkerLeaseRepository;
+  defaultLeaseDurationMs?: number;
   hostname?: string;
   capabilities?: WorkerCapabilities;
   resources?: WorkerResources;
@@ -24,6 +33,10 @@ export interface StartWorkerOptions {
 export interface WorkerShell {
   workerId: WorkerId;
   getStatus: () => WorkerStatus;
+  claimJob: (jobId: string, durationMs?: number) => Promise<ClaimJobResult>;
+  renewLease: (leaseId: string, jobId: string, durationMs?: number) => Promise<RenewLeaseResult>;
+  releaseLease: (leaseId: string, jobId: string) => Promise<ReleaseLeaseResult>;
+  getActiveLeases: () => readonly WorkerLease[];
   stop: () => Promise<void>;
 }
 
@@ -44,6 +57,7 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
   const workerId = createWorkerId(options?.workerId ?? crypto.randomUUID());
   let currentStatus: WorkerStatus = 'READY';
   let heartbeatTimer: NodeJS.Timeout | undefined;
+  const activeLeases = new Map<string, WorkerLease>();
 
   logger.info('Forge Worker service shell started', {
     status: 'running',
@@ -101,15 +115,125 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
     heartbeatTimer.unref();
   }
 
+  const claimJob = async (jobId: string, durationMs?: number): Promise<ClaimJobResult> => {
+    if (!options?.leaseRepository) {
+      throw new Error('Worker cannot claim job without configured leaseRepository');
+    }
+    const leaseDuration =
+      durationMs ?? options.defaultLeaseDurationMs ?? config.workerJobLeaseDurationMs;
+    const result = await options.leaseRepository.claim({
+      jobId,
+      workerId,
+      durationMs: leaseDuration,
+    });
+    if (result.status === 'ACQUIRED') {
+      activeLeases.set(result.lease.id, result.lease);
+      logger.info('Worker claimed job lease', {
+        workerId,
+        jobId,
+        leaseId: result.lease.id,
+        expiresAt: result.lease.expiresAt,
+      });
+    }
+    return result;
+  };
+
+  const renewLease = async (
+    leaseId: string,
+    jobId: string,
+    durationMs?: number,
+  ): Promise<RenewLeaseResult> => {
+    if (!options?.leaseRepository) {
+      throw new Error('Worker cannot renew lease without configured leaseRepository');
+    }
+    const result = await options.leaseRepository.renew({
+      leaseId,
+      jobId,
+      workerId,
+      durationMs,
+    });
+    if (result.status === 'RENEWED') {
+      activeLeases.set(result.lease.id, result.lease);
+      logger.info('Worker renewed job lease', {
+        workerId,
+        jobId,
+        leaseId,
+        expiresAt: result.lease.expiresAt,
+      });
+    } else {
+      activeLeases.delete(leaseId);
+      logger.warn('Worker failed to renew job lease', {
+        workerId,
+        jobId,
+        leaseId,
+        reason: result.reason,
+      });
+    }
+    return result;
+  };
+
+  const releaseLease = async (leaseId: string, jobId: string): Promise<ReleaseLeaseResult> => {
+    if (!options?.leaseRepository) {
+      throw new Error('Worker cannot release lease without configured leaseRepository');
+    }
+    const result = await options.leaseRepository.release({
+      leaseId,
+      jobId,
+      workerId,
+    });
+    activeLeases.delete(leaseId);
+    if (result.status === 'RELEASED') {
+      logger.info('Worker released job lease', {
+        workerId,
+        jobId,
+        leaseId,
+      });
+    }
+    return result;
+  };
+
+  const getActiveLeases = (): readonly WorkerLease[] => {
+    return Object.freeze(Array.from(activeLeases.values()));
+  };
+
   return {
     workerId,
     getStatus: () => currentStatus,
+    claimJob,
+    renewLease,
+    releaseLease,
+    getActiveLeases,
     stop: async () => {
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = undefined;
       }
       logger.info('Forge Worker service shell stopped', { workerId });
+
+      // Gracefully release all actively held leases
+      if (options?.leaseRepository && activeLeases.size > 0) {
+        for (const [leaseId, lease] of Array.from(activeLeases.entries())) {
+          try {
+            await options.leaseRepository.release({
+              leaseId,
+              jobId: lease.jobId,
+              workerId,
+            });
+            logger.info('Worker released lease during graceful stop', {
+              workerId,
+              leaseId,
+              jobId: lease.jobId,
+            });
+          } catch (err: unknown) {
+            logger.error('Failed to release lease during graceful stop', {
+              workerId,
+              leaseId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+        activeLeases.clear();
+      }
 
       if (options?.registry) {
         try {

@@ -4,6 +4,7 @@ import {
   PgJobRepository,
   PgPipelineRepository,
   PgPipelineRunRepository,
+  PgWorkerLeaseRepository,
   PgWorkerRepository,
   resetDatabase,
   runMigrations,
@@ -430,5 +431,69 @@ describe('Real PostgreSQL, Redis & Queue Scheduler Integration Tests', () => {
     // Immediate second dequeue without visibility expiry should return null
     const immediateNext = await queue.dequeue();
     expect(immediateNext).toBeNull();
+  });
+
+  it('atomically claims a PostgreSQL worker lease when scheduling a dequeued job', async () => {
+    const leaseRepo = new PgWorkerLeaseRepository(pool);
+    const leaseScheduler = new ForgeScheduler({
+      workerSource: workerRegistry,
+      jobSource: createJobSourceFromRepository(jobRepo),
+      leaseRepository: leaseRepo,
+      leaseDurationMs: 30000,
+    });
+
+    // 1. Register worker
+    const workerId = 'worker-lease-demo';
+    await workerRegistry.register({
+      workerId,
+      capabilities: { executors: ['docker'] },
+      resources: { cpuCores: 4, memoryBytes: 8192 },
+    });
+    await workerRegistry.heartbeat(createWorkerId(workerId));
+
+    // 2. Create pipeline, run, job
+    const pipeId = createPipelineId('pipe-lease-demo');
+    const runId = createPipelineRunId('run-lease-demo');
+    await pipelineRepo.save(
+      new Pipeline({
+        id: pipeId,
+        name: 'Lease Demo',
+        steps: [{ name: 'step1', command: 'echo 1' }],
+      }),
+    );
+    await pipelineRunRepo.save(
+      new PipelineRun({ id: runId, pipelineId: pipeId, pipelineName: 'Lease Demo' }),
+    );
+
+    const job = new Job({
+      id: createJobId('job-lease-demo'),
+      pipelineRunId: runId,
+      stepName: 'step1',
+      command: 'echo 1',
+      initialStatus: 'QUEUED',
+      requirements: { executor: 'docker', cpuCores: 2 },
+    });
+    await jobRepo.save(job);
+
+    // 3. Enqueue
+    await queue.enqueue({ jobId: job.id, pipelineRunId: runId, stepName: job.stepName });
+
+    // 4. Schedule next
+    const scheduleResult = await leaseScheduler.scheduleNext(queue);
+    expect(scheduleResult).not.toBeNull();
+    expect(scheduleResult?.decision.status).toBe('SCHEDULED');
+    if (scheduleResult?.decision.status === 'SCHEDULED') {
+      expect(scheduleResult.decision.workerId).toBe(workerId);
+      expect(scheduleResult.decision.lease).toBeDefined();
+      expect(scheduleResult.decision.lease?.jobId).toBe(job.id);
+      expect(scheduleResult.decision.lease?.workerId).toBe(workerId);
+      expect(scheduleResult.decision.lease?.status).toBe('ACTIVE');
+
+      // Verify in PostgreSQL database directly
+      const activeLease = await leaseRepo.findActiveByJobId(job.id);
+      expect(activeLease).not.toBeNull();
+      expect(activeLease?.id).toBe(scheduleResult.decision.lease?.id);
+      expect(activeLease?.workerId).toBe(workerId);
+    }
   });
 });

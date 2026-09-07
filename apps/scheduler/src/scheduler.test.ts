@@ -560,4 +560,128 @@ describe('Scheduler — evaluatePrioritizedWork & schedulePrioritized', () => {
     // CRITICAL: queue.acknowledge must NEVER be called by scheduler
     expect(mockQueue.acknowledge).not.toHaveBeenCalled();
   });
+
+  describe('Distributed Worker Lease Claiming Integration', () => {
+    it('claims lease when placement succeeds and leaseRepository is configured', async () => {
+      const mockLease = {
+        id: 'lease-test-123',
+        jobId: jobMediumEligible.id,
+        workerId: 'worker-normal',
+        status: 'ACTIVE' as const,
+        durationMs: 30000,
+        acquiredAt: new Date(),
+        renewedAt: new Date(),
+        expiresAt: new Date(Date.now() + 30000),
+        createdAt: new Date(),
+      };
+
+      const mockLeaseRepo = {
+        claim: vi.fn().mockResolvedValue({
+          status: 'ACQUIRED',
+          lease: mockLease,
+          isIdempotent: false,
+        }),
+        renew: vi.fn(),
+        release: vi.fn(),
+        findActiveByJobId: vi.fn(),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      const scheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([workerNormal]) },
+        leaseRepository: mockLeaseRepo,
+        leaseDurationMs: 30000,
+      });
+
+      const decision = await scheduler.schedule(jobMediumEligible);
+
+      expect(decision.status).toBe('SCHEDULED');
+      if (decision.status === 'SCHEDULED') {
+        expect(decision.workerId).toBe('worker-normal');
+        expect(decision.lease).toBeDefined();
+        expect(decision.lease?.id).toBe('lease-test-123');
+      }
+      expect(mockLeaseRepo.claim).toHaveBeenCalledWith({
+        jobId: jobMediumEligible.id,
+        workerId: 'worker-normal',
+        durationMs: 30000,
+      });
+    });
+
+    it('returns UNSCHEDULABLE with LEASE_CONFLICT when claim encounters active lease conflict', async () => {
+      const mockLeaseRepo = {
+        claim: vi.fn().mockResolvedValue({
+          status: 'CONFLICT',
+          reason: 'LEASE_ALREADY_HELD',
+          currentOwnerId: 'worker-other',
+          expiresAt: new Date(Date.now() + 20000),
+        }),
+        renew: vi.fn(),
+        release: vi.fn(),
+        findActiveByJobId: vi.fn(),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      const scheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([workerNormal]) },
+        leaseRepository: mockLeaseRepo,
+      });
+
+      const decision = await scheduler.schedule(jobMediumEligible);
+
+      expect(decision.status).toBe('UNSCHEDULABLE');
+      if (decision.status === 'UNSCHEDULABLE') {
+        expect(decision.reason).toBe('LEASE_CONFLICT');
+        expect(decision.failureReasons?.[0]).toContain('worker-other');
+      }
+    });
+
+    it('claims leases in schedulePrioritized for successfully scheduled jobs', async () => {
+      const mockLeaseRepo = {
+        claim: vi.fn().mockImplementation((opts: { jobId: string; workerId: string }) =>
+          Promise.resolve({
+            status: 'ACQUIRED',
+            lease: {
+              id: `lease-${opts.jobId}`,
+              jobId: opts.jobId,
+              workerId: opts.workerId,
+              status: 'ACTIVE' as const,
+              durationMs: 30000,
+              acquiredAt: new Date(),
+              renewedAt: new Date(),
+              expiresAt: new Date(Date.now() + 30000),
+              createdAt: new Date(),
+            },
+          }),
+        ),
+        renew: vi.fn(),
+        release: vi.fn(),
+        findActiveByJobId: vi.fn(),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      const scheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([workerNormal]) },
+        leaseRepository: mockLeaseRepo,
+      });
+
+      const prioritizedResult = await scheduler.schedulePrioritized([
+        jobMediumEligible,
+        jobLowEligible,
+      ]);
+
+      expect(prioritizedResult.scheduledDecisions).toHaveLength(2);
+      expect(prioritizedResult.scheduledDecisions[0]?.lease?.id).toBe(
+        `lease-${jobMediumEligible.id}`,
+      );
+      expect(prioritizedResult.scheduledDecisions[1]?.lease?.id).toBe(`lease-${jobLowEligible.id}`);
+      expect(mockLeaseRepo.claim).toHaveBeenCalledTimes(2);
+    });
+  });
 });

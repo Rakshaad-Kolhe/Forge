@@ -83,3 +83,18 @@ export interface JobAttemptRow {
   failure_reason: string | null;
   created_at: Date;
 }
+
+/**
+ * Relational representation of a WorkerLease record.
+ */
+export interface WorkerLeaseRow {
+  id: string;
+  job_id: string;
+  worker_id: string;
+  status: string;
+  duration_ms: number;
+  acquired_at: Date;
+  renewed_at: Date;
+  expires_at: Date;
+  created_at: Date;
+}
