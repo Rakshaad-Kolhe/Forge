@@ -12,6 +12,10 @@
   "dependencies": {
     "@forge/config": "*",
     "@forge/contracts": "*",
-    "@forge/logging": "*"
+    "@forge/database": "*",
+    "@forge/logging": "*",
+    "@forge/pipeline": "*",
+    "@forge/queue": "*",
+    "@forge/worker-registry": "*"
   }
 }

@@ -67,3 +67,15 @@ A durable binary asset or set of files generated during a Job Attempt (e.g., com
 ### Cache
 
 A transient storage mechanism used to accelerate repetitive build operations (such as language dependency directories or build compiler caches) across job executions. Caches are strictly disposable; the loss of a cache degrades build speed but must never cause build failures or incorrect outcomes.
+
+### Operational Eligibility
+
+The dual-predicate condition requiring a worker node to be both in durable `status = READY` (PostgreSQL) and transient `liveness = ALIVE` (unexpired heartbeat in Redis) before being considered as a candidate for job placement.
+
+### DeterministicFirstEligible
+
+The baseline worker selection policy for Forge V2 that sorts candidate workers matching declared job requirements into a canonical, locale-independent sequence based on ascending `workerId` code-points and selects the first worker in that ordering.
+
+### ScheduleDecision
+
+The typed, explainable result produced by the scheduler service. It explicitly differentiates successful placements (`SCHEDULED`, identifying the selected worker and candidate counts) from placement failures (`UNSCHEDULABLE`, detailing why no candidate matched).
