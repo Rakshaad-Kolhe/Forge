@@ -4,6 +4,7 @@ export { DockerExecutor } from './docker/docker-executor.js';
 export {
   createWorkspace,
   cleanupWorkspace,
+  getDefaultWorkspaceBaseDir,
   toDockerBindMountPath,
   type WorkspaceInfo,
 } from './docker/workspace.js';
