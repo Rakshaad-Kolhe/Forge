@@ -30,6 +30,7 @@ Delivery-semantics wording used verbatim in docs:
 ## 2. Repository inspection findings (`[VERIFIED]` unless noted)
 
 ### 2.1 Events (`packages/events/`)
+
 - `ForgeEvent` — discriminated union of 13 types; `ForgeEventEnvelope<TType,TPayload>` carries
   `event_id` (UUID v4, `EVENT_ID_PATTERN`), `event_type`, `occurred_at` (ISO-8601), `version`
   (`EVENT_SCHEMA_VERSION = 1`), optional correlation ids, `payload`. Frozen after `createForgeEvent`.
@@ -51,8 +52,9 @@ Delivery-semantics wording used verbatim in docs:
     first-enqueue `JobQueued`.
 
 ### 2.2 Database (`packages/database/`)
+
 - `withTransaction(pool, cb)` → `TransactionContext { client, pipelines, pipelineRuns, jobs,
-  jobAttempts, workerLeases, deadLetterJobs }` — each repo bound to the one `pg.PoolClient`.
+jobAttempts, workerLeases, deadLetterJobs }` — each repo bound to the one `pg.PoolClient`.
   `BEGIN` → cb → `COMMIT`; on throw `ROLLBACK`; always `client.release()`.
 - `migrator.ts`: migrations run from **inline `*_SQL` string constants** in `MIGRATIONS[]`
   (`001`–`007`), applied by `runMigrations(client)` each inside its own `BEGIN/COMMIT`.
@@ -83,6 +85,7 @@ Delivery-semantics wording used verbatim in docs:
   Files named `*.integration.test.ts`; `vitest` `fileParallelism: false`.
 
 ### 2.3 Worker (`apps/worker/src/index.ts`)
+
 - `executeJob` persists twice, **both already via `withTransaction`** when `options.pool` is set:
   1. RUNNING commit (`tx.jobs.save` + `tx.jobAttempts.save`), then best-effort `JobStarted`.
   2. Terminal commit (`tx.jobs.save` + `tx.jobAttempts.save`), then best-effort log chunks +
@@ -95,6 +98,7 @@ Delivery-semantics wording used verbatim in docs:
   enforces it today. Addressed in §7.
 
 ### 2.4 Scheduler (`apps/scheduler/`)
+
 - `ForgeScheduler.publishJobClaimed(...)` / `publishWorkerLostForRecovery(result)` — currently
   `safePublish`. Called from single-claim (`claimLeaseForDecision`) and batch paths, and from
   `recoverExpiredLeases` (wraps `recoveryService.recoverExpiredLeases`).
@@ -103,8 +107,9 @@ Delivery-semantics wording used verbatim in docs:
 - `apps/scheduler/src/index.ts` `startScheduler()` — PR-01 log-only shell returning `{ stop() }`.
 
 ### 2.5 Config / contracts
+
 - `packages/config`: one big zod `configSchema`; each var `z.string().regex(/^\d+$/).default(...)
-  .transform(Number).pipe(z.number().int().min(...))`; cross-field `.refine(...)`; `loadConfig(env=process.env)`
+.transform(Number).pipe(z.number().int().min(...))`; cross-field `.refine(...)`; `loadConfig(env=process.env)`
   → typed `AppConfig`. Mirror fields in `packages/contracts` `AppConfig` (a single-file package,
   **zero runtime deps**).
 - `DockerExecutor` takes plain numeric options, **not** `@forge/config` — the precedent for
@@ -135,16 +140,16 @@ apps/scheduler ─ recovery ──────┘     jobs + dead_letter_jobs + 
                                         Consumers  (must dedupe on event_id)
 ```
 
-| Unit | Package | Responsibility | New deps |
-|---|---|---|---|
-| `008_outbox_events` migration | `@forge/database` | `OUTBOX_EVENTS_SQL` const + `MIGRATIONS` entry + `sql/008_*.sql` | — |
-| `OutboxRepository` contract + `PgOutboxRepository` | `@forge/database` | all `outbox_events` SQL (see §5) | — |
-| `tx.outbox` | `@forge/database` | `PgOutboxRepository` on the tx client, added to `TransactionContext` | — |
-| `pendingOutboxRows` param + mapper | `@forge/database` | narrow pure-data param on `claimBatch` / recovery (see §6) | — |
-| `OutboxDispatcher`, backoff, retention | **new `@forge/outbox`** | poll/claim/publish/mark/retry/dead/retention; `start`/`stop`/`runOnce` | database, events, logging |
-| dispatcher wiring | `apps/scheduler/src/index.ts` | construct + `start()`/`stop()` beside `startRecoveryLoop` | outbox |
-| producer integration | `apps/worker`, `apps/scheduler` | enqueue durable events in-transaction; drop their `safePublish` | — |
-| `benchmarks/outbox/` | repo root | overhead + throughput + EXPLAIN | — |
+| Unit                                               | Package                         | Responsibility                                                         | New deps                  |
+| -------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------- | ------------------------- |
+| `008_outbox_events` migration                      | `@forge/database`               | `OUTBOX_EVENTS_SQL` const + `MIGRATIONS` entry + `sql/008_*.sql`       | —                         |
+| `OutboxRepository` contract + `PgOutboxRepository` | `@forge/database`               | all `outbox_events` SQL (see §5)                                       | —                         |
+| `tx.outbox`                                        | `@forge/database`               | `PgOutboxRepository` on the tx client, added to `TransactionContext`   | —                         |
+| `pendingOutboxRows` param + mapper                 | `@forge/database`               | narrow pure-data param on `claimBatch` / recovery (see §6)             | —                         |
+| `OutboxDispatcher`, backoff, retention             | **new `@forge/outbox`**         | poll/claim/publish/mark/retry/dead/retention; `start`/`stop`/`runOnce` | database, events, logging |
+| dispatcher wiring                                  | `apps/scheduler/src/index.ts`   | construct + `start()`/`stop()` beside `startRecoveryLoop`              | outbox                    |
+| producer integration                               | `apps/worker`, `apps/scheduler` | enqueue durable events in-transaction; drop their `safePublish`        | —                         |
+| `benchmarks/outbox/`                               | repo root                       | overhead + throughput + EXPLAIN                                        | —                         |
 
 **Dependency rules honoured:** `@forge/database` does **not** import `@forge/events`
 (see §5.4). `@forge/outbox` does **not** import `@forge/config` (takes `OutboxDispatcherConfig`).
@@ -294,6 +299,7 @@ export interface OutboxRepository {
 ```
 
 ### 5.2 `PgOutboxRepository`
+
 - Mirrors `PgDeadLetterRepository` style: constructor `(client: DatabaseClient)`, every method
   wrapped, errors → `PersistenceError` (except the typed ones above).
 - `delivery_attempt_count` is incremented **only** in `markRetry` (a real publish was attempted).
@@ -301,20 +307,28 @@ export interface OutboxRepository {
 - `enqueue` validation (no `@forge/events` import): `input.payload` is an object;
   `input.eventId` matches `^[0-9a-f-]{36}$` (UUID shape — full v4 check is the producer's job
   via `parseForgeEvent`); `Buffer.byteLength(JSON.stringify(input.payload),'utf8') <=
-  OUTBOX_MAX_PAYLOAD_BYTES` else `OutboxPayloadError`. Column values (`event_type`, `version`,
+OUTBOX_MAX_PAYLOAD_BYTES` else `OutboxPayloadError`. Column values (`event_type`, `version`,
   `occurred_at`, correlations) are taken from `input`, not re-derived from `payload`.
 
 ### 5.3 `TransactionContext` extension (`transaction.ts`)
+
 ```ts
 export interface TransactionContext {
   client: pg.PoolClient;
-  pipelines; pipelineRuns; jobs; jobAttempts; workerLeases; deadLetterJobs;
-  outbox: PgOutboxRepository;   // NEW — new PgOutboxRepository(client)
+  pipelines;
+  pipelineRuns;
+  jobs;
+  jobAttempts;
+  workerLeases;
+  deadLetterJobs;
+  outbox: PgOutboxRepository; // NEW — new PgOutboxRepository(client)
 }
 ```
+
 All existing `withTransaction` callers gain `tx.outbox` (unused unless they call it).
 
 ### 5.4 Why `@forge/database` does not import `@forge/events`
+
 `OutboxEnqueueInput` (defined in zero-dep `@forge/contracts`) carries the already-validated
 envelope as `payload: Record<string, unknown>` plus the extracted scalar columns. Producers
 (`apps/worker`, `apps/scheduler` — both already import `@forge/events`) build the `ForgeEvent`,
@@ -322,39 +336,54 @@ call `parseForgeEvent` to validate, then `toOutboxEnqueueInput(event)` — a ~10
 field-projection helper that lives in **`@forge/events`** (`src/outbox-input.ts`; it only needs
 the `ForgeEvent` type and the plain `OutboxEnqueueInput` contract type, so it stays within
 `@forge/events`'s existing dep set of `@forge/contracts` + `@forge/logging`). The dispatcher
-(`@forge/outbox`, which *does* depend on `@forge/events`) calls `parseForgeEvent(row.payload)`
+(`@forge/outbox`, which _does_ depend on `@forge/events`) calls `parseForgeEvent(row.payload)`
 before `publish`. `@forge/database` only ever handles the plain input/record shapes and imports
 no events package. Net effect: **no `apps/*` gains a new package dependency for enqueueing** —
 `apps/worker` uses `@forge/events` + `@forge/database` (both already deps); only
 `apps/scheduler/src/index.ts` adds `@forge/outbox`, and only for the dispatcher class.
 
 ### 5.5 `@forge/contracts` additions (zero-dep)
+
 ```ts
 export type OutboxStatus = 'PENDING' | 'CLAIMED' | 'PUBLISHED' | 'DEAD';
 
 export interface OutboxEnqueueInput {
-  readonly id: string;                       // 'outbox_' || uuid, caller-generated
+  readonly id: string; // 'outbox_' || uuid, caller-generated
   readonly eventId: string;
   readonly eventType: string;
   readonly version: number;
-  readonly occurredAt: string;               // ISO-8601
+  readonly occurredAt: string; // ISO-8601
   readonly correlation: {
-    readonly pipelineId?: string; readonly runId?: string; readonly jobId?: string;
-    readonly attemptId?: string; readonly workerId?: string;
+    readonly pipelineId?: string;
+    readonly runId?: string;
+    readonly jobId?: string;
+    readonly attemptId?: string;
+    readonly workerId?: string;
   };
   readonly payload: Record<string, unknown>; // complete, pre-validated envelope
 }
 
 export interface OutboxEventRecord {
-  readonly id: string; readonly eventId: string; readonly eventType: string;
-  readonly version: number; readonly occurredAt: Date;
-  readonly pipelineId?: string; readonly runId?: string; readonly jobId?: string;
-  readonly attemptId?: string; readonly workerId?: string;
+  readonly id: string;
+  readonly eventId: string;
+  readonly eventType: string;
+  readonly version: number;
+  readonly occurredAt: Date;
+  readonly pipelineId?: string;
+  readonly runId?: string;
+  readonly jobId?: string;
+  readonly attemptId?: string;
+  readonly workerId?: string;
   readonly payload: Record<string, unknown>;
   readonly status: OutboxStatus;
-  readonly deliveryAttemptCount: number; readonly dispatchCount: number;
-  readonly availableAt: Date; readonly claimedAt?: Date; readonly claimedBy?: string;
-  readonly publishedAt?: Date; readonly lastError?: string; readonly createdAt: Date;
+  readonly deliveryAttemptCount: number;
+  readonly dispatchCount: number;
+  readonly availableAt: Date;
+  readonly claimedAt?: Date;
+  readonly claimedBy?: string;
+  readonly publishedAt?: Date;
+  readonly lastError?: string;
+  readonly createdAt: Date;
 }
 
 export const DEFAULT_OUTBOX_DISPATCH_POLL_INTERVAL_MS = 1000;
@@ -376,11 +405,12 @@ export const MAX_OUTBOX_MAX_DELIVERY_ATTEMPTS = 100;
 ## 6. Transactional coupling
 
 ### 6.1 Worker (`apps/worker/src/index.ts`)
+
 Inside the **existing** `withTransaction` blocks:
 
-| Block | Existing | Added |
-|---|---|---|
-| RUNNING commit | `tx.jobs.save(job)`, `tx.jobAttempts.save(attempt)` | `tx.outbox.enqueue(toOutboxEnqueueInput(JobStarted))` |
+| Block           | Existing                                            | Added                                                                    |
+| --------------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
+| RUNNING commit  | `tx.jobs.save(job)`, `tx.jobAttempts.save(attempt)` | `tx.outbox.enqueue(toOutboxEnqueueInput(JobStarted))`                    |
 | Terminal commit | `tx.jobs.save(job)`, `tx.jobAttempts.save(attempt)` | `tx.outbox.enqueue(<terminal>)`; if retry `tx.outbox.enqueue(JobQueued)` |
 
 - The now-redundant best-effort `safePublish` for `JobStarted`, `JobSucceeded`, `JobFailed`,
@@ -390,13 +420,16 @@ Inside the **existing** `withTransaction` blocks:
   `job`, `retryDecision`, `ownershipLost`, `executorThrew`) exactly as PR 20 builds them.
 
 ### 6.2 Scheduler
+
 **`JobClaimed` — via `claimBatch` pure-data param** (`PgWorkerLeaseRepository`):
+
 ```ts
 // contracts: BatchClaimOptions gains
 readonly pendingOutbox?: {
   readonly rowForAcquired: (item: BatchClaimItem, lease: WorkerLease) => OutboxEnqueueInput;
 };
 ```
+
 Inside `claimBatch`'s `withTransactionClient` callback, after `finalResults` is built, for each
 result with `status === 'ACQUIRED' && isIdempotent !== true`, call
 `options.pendingOutbox.rowForAcquired(item, lease)` and
@@ -423,6 +456,7 @@ the mapper (builds+validates `WorkerLost`).
   in the plan.
 
 ### 6.3 Retry accounting (adversarial-review fix A / §12-A)
+
 - **`dispatch_count`** — incremented on every claim and reclaim. Diagnostics only. Never
   triggers `DEAD`.
 - **`delivery_attempt_count`** — incremented **only** in `markRetry`, i.e. only after
@@ -432,7 +466,7 @@ the mapper (builds+validates `WorkerLost`).
   `delivery_attempt_count` → no budget consumed.
 - Publish-succeeded-then-crash-before-`markPublished`: next dispatcher reclaims, re-publishes
   (the intended duplicate), then `markPublished`. `delivery_attempt_count` incremented once per
-  *actual* failed attempt only; a *successful* re-publish consumes no budget.
+  _actual_ failed attempt only; a _successful_ re-publish consumes no budget.
 - `DEAD` iff `delivery_attempt_count + 1 >= OUTBOX_MAX_DELIVERY_ATTEMPTS` at a genuine failure.
   Termination: an event dies only after `OUTBOX_MAX_DELIVERY_ATTEMPTS` real transport rejections
   — never because a process died or a checkpoint write failed.
@@ -442,15 +476,15 @@ the mapper (builds+validates `WorkerLost`).
 ## 7. Worker production-bypass guard (adversarial-review fix / §12-C)
 
 - The worker execution loop MUST persist via `withTransaction` (which always carries
-  `tx.outbox`). New invariant text (invariants.md §14): *"The production worker execution loop
+  `tx.outbox`). New invariant text (invariants.md §14): _"The production worker execution loop
   MUST NOT commit job state without the corresponding transactional outbox event. Committing job
   state through a non-transactional repository path is a test-only affordance and is prohibited
-  in production wiring."*
+  in production wiring."_
 - Enforcement in `executeJob`: the dangerous combination is **non-transactional persistence +
   event publishing** — i.e. `options.jobRepository` set, `options.pool` **not** set, and
   `options.eventPublisher` set. In that exact case `executeJob` `throw`s at entry:
   `"worker durable events require a transactional pool; jobRepository-only persistence cannot
-  guarantee the outbox"`. Permitted, unchanged: `pool` + `eventPublisher` (the target — durable
+guarantee the outbox"`. Permitted, unchanged: `pool` + `eventPublisher` (the target — durable
   lifecycle events + best-effort `JobLogChunk`); `pool` only; `jobRepository` only with no
   publisher (pure unit tests); no persistence at all (today's shell).
 - Docs stop describing the no-pool path as a "degraded production mode"; it is named as a
@@ -461,41 +495,55 @@ the mapper (builds+validates `WorkerLost`).
 ## 8. `@forge/outbox` package
 
 ### 8.1 `OutboxDispatcherConfig` (plain object; mapped from `loadConfig()` by `apps/scheduler`)
+
 ```ts
 export interface OutboxDispatcherConfig {
   readonly pollIntervalMs: number;
   readonly batchSize: number;
-  readonly claimTimeoutMs: number;      // stale-claim recovery threshold
-  readonly publishTimeoutMs: number;    // per-event publish() timeout — SEPARATE from claimTimeout
+  readonly claimTimeoutMs: number; // stale-claim recovery threshold
+  readonly publishTimeoutMs: number; // per-event publish() timeout — SEPARATE from claimTimeout
   readonly maxDeliveryAttempts: number;
   readonly baseBackoffMs: number;
   readonly maxBackoffMs: number;
-  readonly retentionMaxAgeMs: number;   // 0 disables
+  readonly retentionMaxAgeMs: number; // 0 disables
   readonly retentionBatchSize: number;
   readonly retentionEveryNTicks: number; // default 60
-  readonly dispatcherId?: string;        // default `outbox-${randomUUID()}`
+  readonly dispatcherId?: string; // default `outbox-${randomUUID()}`
 }
 ```
+
 Constraint (validated where mapped): `claimTimeoutMs >= publishTimeoutMs + pollIntervalMs`
 (a claim must outlive a legitimate in-flight publish); `maxBackoffMs >= baseBackoffMs`.
 
 ### 8.2 `OutboxDispatcher`
+
 ```ts
 class OutboxDispatcher {
-  constructor(deps: { repository: OutboxRepository; publisher: EventPublisher;
-                      logger?: Logger; config: OutboxDispatcherConfig });
-  start(): void;                 // idempotent; setInterval(tick); timer.unref()
-  stop(): Promise<void>;         // idempotent; clearInterval; await in-flight tick; no timer survives
-  runOnce(): Promise<OutboxTickSummary>;   // single tick — deterministic tests
+  constructor(deps: {
+    repository: OutboxRepository;
+    publisher: EventPublisher;
+    logger?: Logger;
+    config: OutboxDispatcherConfig;
+  });
+  start(): void; // idempotent; setInterval(tick); timer.unref()
+  stop(): Promise<void>; // idempotent; clearInterval; await in-flight tick; no timer survives
+  runOnce(): Promise<OutboxTickSummary>; // single tick — deterministic tests
 }
 interface OutboxTickSummary {
-  claimed: number; published: number; retried: number; dead: number;
-  claimLost: number; reclaimed: number; retentionDeleted: number;
+  claimed: number;
+  published: number;
+  retried: number;
+  dead: number;
+  claimLost: number;
+  reclaimed: number;
+  retentionDeleted: number;
 }
 ```
+
 `tick()` (guarded by `isDispatching`, mirrors scheduler `isSweeping`):
+
 1. `rows = repository.claimBatch({ dispatcherId, limit: batchSize,
-   staleClaimBefore: new Date(Date.now() - claimTimeoutMs) })`.
+staleClaimBefore: new Date(Date.now() - claimTimeoutMs) })`.
 2. For each row: `event = parseForgeEvent(row.payload)` (on parse failure →
    `markRetry({exhausted:true})` with `last_error='unparseable payload'` → `DEAD`; a stored
    validated payload should never fail, so this is a corruption guard).
@@ -503,11 +551,12 @@ interface OutboxTickSummary {
    - resolved → `outcome = markPublished(row.id, row.claimToken)`.
    - threw / timed out → `exhausted = row.deliveryAttemptCount + 1 >= maxDeliveryAttempts`;
      `outcome = markRetry({ id, claimToken: row.claimToken, availableAt: NOW()+backoff(row.deliveryAttemptCount),
-     lastError: truncate(err), exhausted })`.
+lastError: truncate(err), exhausted })`.
    - `outcome === 'CLAIM_LOST'` → log `outbox.claim_lost`, **discard**, do not touch the row
      (a newer owner holds it).
 3. Every `retentionEveryNTicks` ticks and when `retentionMaxAgeMs > 0`:
    `deletePublishedBefore(NOW() - retentionMaxAgeMs, retentionBatchSize)`.
+
 - Never mutates job/attempt/lease/DLQ state.
 - `backoff(n) = min(maxBackoffMs, baseBackoffMs * 2^n)` — pure, **no jitter** (determinism
   rule), applied via `available_at` (DB-time, no `setTimeout`).
@@ -515,6 +564,7 @@ interface OutboxTickSummary {
   its (by-then stale) dispatcher unable to mutate the row — see §12-B.
 
 ### 8.3 `toOutboxEnqueueInput(event: ForgeEvent): OutboxEnqueueInput`
+
 Pure helper in **`@forge/events`** (`src/outbox-input.ts`, re-exported from the package index):
 generates `id = 'outbox_' + randomUUID()`, copies `event_id/event_type/version/occurred_at`,
 lifts correlation ids, sets `payload = event` (the frozen envelope). Producers
@@ -533,20 +583,21 @@ taking any new package dependency.
 - Retention code is **not exercised until** the fencing + conditional-mutation tests (§11 test
   matrix "Race") pass — enforced by ordering the implementation plan, and by a guard test that
   a concurrent reclaim + retention cannot drop a row that a losing dispatcher later touches.
-- `DEAD` rows: no auto-deletion in PR 21. Docs: *"DEAD outbox events accumulate and require
-  manual investigation/triage; a bounded DEAD-retention job is future work."*
+- `DEAD` rows: no auto-deletion in PR 21. Docs: _"DEAD outbox events accumulate and require
+  manual investigation/triage; a bounded DEAD-retention job is future work."_
 
 ---
 
 ## 10. Producer authority (adversarial-review fix / §12 Q4)
 
-| Durable event | Sole authoritative producer | Structural guard |
-|---|---|---|
-| `JobClaimed` | `ForgeScheduler` placement → `claimBatch(..., pendingOutbox)` | `PgWorkerLeaseRepository.claim` (single-item, worker path) **does not accept** `pendingOutbox`; only `claimBatch` does. Worker `claimJob`→`claim`→`claimBatch` passes no `pendingOutbox`. Regression test: worker `claimJob` path writes **zero** `outbox_events`. |
-| `JobStarted`, `JobSucceeded`, `JobFailed`, `JobCancelled`, `JobQueued` (retry) | `apps/worker` `executeJob` `withTransaction` blocks | only these two blocks enqueue them; `safePublish` for them removed |
-| `WorkerLost` | `ForgeScheduler` recovery → `recoverSingleLease` mapper (`NO_OP` excluded) | `LeaseRecoveryService` enqueues only when the scheduler supplies the mapper |
+| Durable event                                                                  | Sole authoritative producer                                                | Structural guard                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `JobClaimed`                                                                   | `ForgeScheduler` placement → `claimBatch(..., pendingOutbox)`              | `PgWorkerLeaseRepository.claim` (single-item, worker path) **does not accept** `pendingOutbox`; only `claimBatch` does. Worker `claimJob`→`claim`→`claimBatch` passes no `pendingOutbox`. Regression test: worker `claimJob` path writes **zero** `outbox_events`. |
+| `JobStarted`, `JobSucceeded`, `JobFailed`, `JobCancelled`, `JobQueued` (retry) | `apps/worker` `executeJob` `withTransaction` blocks                        | only these two blocks enqueue them; `safePublish` for them removed                                                                                                                                                                                                 |
+| `WorkerLost`                                                                   | `ForgeScheduler` recovery → `recoverSingleLease` mapper (`NO_OP` excluded) | `LeaseRecoveryService` enqueues only when the scheduler supplies the mapper                                                                                                                                                                                        |
 
 Documented, not fixed (pre-existing PR 20 semantics; out of scope):
+
 - One physical lease loss yields both `JobFailed{failure_kind:'LEASE_LOST'}` (worker) and
   `WorkerLost{recovery_action:'REQUEUED'}` (scheduler) — different vantage points, both true.
 - `LeaseRecoveryService` requeue emits `WorkerLost` but **not** `JobQueued` — queue-depth
@@ -558,12 +609,12 @@ Documented, not fixed (pre-existing PR 20 semantics; out of scope):
 
 `docs/architecture/events.md` gains an explicit table:
 
-| Event | Delivery class |
-|---|---|
-| `JobClaimed`, `JobStarted`, `JobSucceeded`, `JobFailed`, `JobCancelled`, `JobQueued`, `WorkerLost` | **Durable, at-least-once** (outbox → dispatcher) |
-| `JobLogChunk`, `WorkerHeartbeat` | **Best-effort** (direct `safePublish`, may be lost on publisher failure / crash / closed bus) |
-| `WorkerRegistered` | **Best-effort** (registry path; not transactionally coupled in PR 21) |
-| `PipelineCreated`, `PipelineQueued`, `PipelineCompleted`, first-enqueue `JobQueued` | contract-only, no producer |
+| Event                                                                                              | Delivery class                                                                                |
+| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `JobClaimed`, `JobStarted`, `JobSucceeded`, `JobFailed`, `JobCancelled`, `JobQueued`, `WorkerLost` | **Durable, at-least-once** (outbox → dispatcher)                                              |
+| `JobLogChunk`, `WorkerHeartbeat`                                                                   | **Best-effort** (direct `safePublish`, may be lost on publisher failure / crash / closed bus) |
+| `WorkerRegistered`                                                                                 | **Best-effort** (registry path; not transactionally coupled in PR 21)                         |
+| `PipelineCreated`, `PipelineQueued`, `PipelineCompleted`, first-enqueue `JobQueued`                | contract-only, no producer                                                                    |
 
 **Ordering caveat (new behaviour, must be documented):** `JobLogChunk` publishes immediately
 (best-effort) while terminal lifecycle events now go outbox → dispatcher (delayed by ≥ one poll
@@ -576,25 +627,26 @@ not across the durable/best-effort boundary.
 
 ## 12. How each adversarial finding is resolved
 
-| # | Finding | Resolution in this design |
-|---|---|---|
-| A | `attempt_count`++ at claim conflated crash / checkpoint-fail / transport-reject | §4, §6.3 — split `dispatch_count` (claims, diagnostic) vs `delivery_attempt_count` (real publish attempts only, drives `DEAD`) |
-| B | No fencing; stale dispatcher can mutate a newer owner's row | §4, §5.1, §8.2 — `claim_token` regenerated every (re)claim; **every** mutation fenced `WHERE status='CLAIMED' AND claim_token=$token`; `0 rows ⇒ CLAIM_LOST`; dispatcher discards |
-| — | `markPublished`/`markRetry` could resurrect `PUBLISHED`→`PENDING` | §4.1, §5.1 — conditional `WHERE status='CLAIMED' …`; no code path sets `PENDING` from `PUBLISHED` |
-| — | Generic `(txClient)=>Promise<void>` escape hatch | §6.2 — replaced with pure-data `rowForAcquired` / `outboxRowForRecord` mappers; all SQL stays in `PgOutboxRepository`; repo owns the tx |
-| C | Durability contingent on unenforced worker `pool` wiring | §7 — `executeJob` throws when a publisher/outbox is configured without `pool`; new invariant; docs reframed |
-| Q4 | `JobClaimed` single-producer enforced only by convention | §10 — only `claimBatch` (scheduler path) accepts `pendingOutbox`; `claim` (worker path) does not; regression test |
-| Q5/Q6 | Concurrent duplicate delivery beyond crash window; reclaim races live slow dispatcher | §8.1 — separate `publishTimeoutMs`; `claimTimeoutMs >= publishTimeoutMs + pollIntervalMs`; §8.2 bounded `publish()` timeout; §12-B fencing makes the stale writer harmless; mandatory slow-publisher race test (§13) |
-| Q7 | 24h retention too aggressive; retention + unguarded UPDATE ⇒ silent loss | §9 — default 7 days / `0`; retention ships only after fencing tests pass; `DEAD` never auto-deleted |
-| Q8 | `JobLogChunk` exclusion — undocumented guarantee + ordering inversion | §11 — explicit delivery-class table; §14.8 invariant updated; ordering caveat documented |
-| Q9 | `@forge/outbox`→`@forge/config` coupling; dispatcher in `apps/scheduler` deviates from target topology | §3, §8.1 — `@forge/outbox` takes `OutboxDispatcherConfig`; zero `apps/scheduler` imports in the package; hosting in `apps/scheduler` is wiring only |
-| — | outbox param typed against `@forge/events` on a contract | §5.4, §5.5 — `OutboxEnqueueInput` in zero-dep `@forge/contracts`; `@forge/database` never imports `@forge/events` |
+| #     | Finding                                                                                                | Resolution in this design                                                                                                                                                                                            |
+| ----- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A     | `attempt_count`++ at claim conflated crash / checkpoint-fail / transport-reject                        | §4, §6.3 — split `dispatch_count` (claims, diagnostic) vs `delivery_attempt_count` (real publish attempts only, drives `DEAD`)                                                                                       |
+| B     | No fencing; stale dispatcher can mutate a newer owner's row                                            | §4, §5.1, §8.2 — `claim_token` regenerated every (re)claim; **every** mutation fenced `WHERE status='CLAIMED' AND claim_token=$token`; `0 rows ⇒ CLAIM_LOST`; dispatcher discards                                    |
+| —     | `markPublished`/`markRetry` could resurrect `PUBLISHED`→`PENDING`                                      | §4.1, §5.1 — conditional `WHERE status='CLAIMED' …`; no code path sets `PENDING` from `PUBLISHED`                                                                                                                    |
+| —     | Generic `(txClient)=>Promise<void>` escape hatch                                                       | §6.2 — replaced with pure-data `rowForAcquired` / `outboxRowForRecord` mappers; all SQL stays in `PgOutboxRepository`; repo owns the tx                                                                              |
+| C     | Durability contingent on unenforced worker `pool` wiring                                               | §7 — `executeJob` throws when a publisher/outbox is configured without `pool`; new invariant; docs reframed                                                                                                          |
+| Q4    | `JobClaimed` single-producer enforced only by convention                                               | §10 — only `claimBatch` (scheduler path) accepts `pendingOutbox`; `claim` (worker path) does not; regression test                                                                                                    |
+| Q5/Q6 | Concurrent duplicate delivery beyond crash window; reclaim races live slow dispatcher                  | §8.1 — separate `publishTimeoutMs`; `claimTimeoutMs >= publishTimeoutMs + pollIntervalMs`; §8.2 bounded `publish()` timeout; §12-B fencing makes the stale writer harmless; mandatory slow-publisher race test (§13) |
+| Q7    | 24h retention too aggressive; retention + unguarded UPDATE ⇒ silent loss                               | §9 — default 7 days / `0`; retention ships only after fencing tests pass; `DEAD` never auto-deleted                                                                                                                  |
+| Q8    | `JobLogChunk` exclusion — undocumented guarantee + ordering inversion                                  | §11 — explicit delivery-class table; §14.8 invariant updated; ordering caveat documented                                                                                                                             |
+| Q9    | `@forge/outbox`→`@forge/config` coupling; dispatcher in `apps/scheduler` deviates from target topology | §3, §8.1 — `@forge/outbox` takes `OutboxDispatcherConfig`; zero `apps/scheduler` imports in the package; hosting in `apps/scheduler` is wiring only                                                                  |
+| —     | outbox param typed against `@forge/events` on a contract                                               | §5.4, §5.5 — `OutboxEnqueueInput` in zero-dep `@forge/contracts`; `@forge/database` never imports `@forge/events`                                                                                                    |
 
 ---
 
 ## 13. Test plan (all `[VERIFIED]` = real PostgreSQL via the existing harness)
 
 ### `@forge/database`
+
 - `pg-outbox-repository.integration.test.ts`: enqueue; duplicate `event_id` → `ConstraintViolationError`;
   oversize payload → `OutboxPayloadError` (inside a tx → rolls back a co-write); claimable selection
   (PENDING+due, and stale CLAIMED); `claimBatch` sets token/`dispatch_count`, not
@@ -611,6 +663,7 @@ not across the durable/best-effort boundary.
   with jobs/`dead_letter_jobs`; `NO_OP` → no outbox row; forced outbox failure → recovery tx rolls back.
 
 ### `@forge/outbox`
+
 - `dispatcher.test.ts` (fake `EventPublisher`, fake or real repo): empty / one / many / batch
   limit; publisher success → PUBLISHED; publisher throws → PENDING + backoff + `last_error`;
   publisher hangs > `publishTimeoutMs` → treated as failed; retry exhaustion → DEAD (retains
@@ -622,8 +675,8 @@ not across the durable/best-effort boundary.
   the same row concurrently (token check); no invalid status transition.
 - `slow-publisher-fencing.race.test.ts` **(mandatory)**: A claims (token T1); A's publish sleeps
   > `claimTimeoutMs`; B reclaims (token T2), publishes, `markPublished(T2)`; A wakes,
-  `markPublished(id, T1)` → `CLAIM_LOST`; A performs no further mutation; row stays `PUBLISHED`;
-  **assert no `PUBLISHED → PENDING`**.
+  > `markPublished(id, T1)` → `CLAIM_LOST`; A performs no further mutation; row stays `PUBLISHED`;
+  > **assert no `PUBLISHED → PENDING`**.
 - `at-least-once.experiment.test.ts` **(mandatory)**: A publishes OK, A "crashes" before
   `markPublished`; B reclaims, publishes again; assert transport observed the **same `event_id`
   twice** and this is expected (not a failure); `delivery_attempt_count` reflects real attempts.
@@ -633,19 +686,22 @@ not across the durable/best-effort boundary.
   bounded batch; concurrent dispatch safe.
 
 ### Producers
+
 - `apps/worker` integration: after `executeJob` (with `pool`), `outbox_events` holds `JobStarted`
-  + the correct terminal event (+ `JobQueued` on retry), co-committed with `jobs`/`job_attempts`;
-  rollback test; **`executeJob` throws when `eventPublisher` set without `pool`** (§7).
+  - the correct terminal event (+ `JobQueued` on retry), co-committed with `jobs`/`job_attempts`;
+    rollback test; **`executeJob` throws when `eventPublisher` set without `pool`** (§7).
 - `apps/scheduler` integration: placement → lease row + `JobClaimed` row co-committed; recovery
   sweep → `WorkerLost` rows co-committed; worker `claimJob` path → **zero** `JobClaimed` rows.
 
 ### Regression
+
 - All `packages/events` PR 20 tests unchanged and green.
 - `apps/worker`, `apps/scheduler`, `packages/executor`, `packages/database` existing suites green
   (lease recovery, worker loss, retry, backoff, DLQ, fairness, priority, resource matching,
   Docker execution, cleanup).
 
 ### Failure scenarios explicitly asserted + documented (prompt §45)
+
 PG unavailable → state + outbox fail together; outbox INSERT failure → rollback; publisher
 unavailable → retryable; publisher timeout → retryable or DEAD per attempt count; dispatcher
 crash after claim → reclaimable, **no delivery budget burned**; dispatcher crash after publish →
@@ -694,19 +750,19 @@ No production-capacity claims from local numbers.
 
 ## 16. Config additions (`packages/config` + `AppConfig` mirror)
 
-| env var | default | validation |
-|---|---|---|
-| `OUTBOX_DISPATCH_POLL_INTERVAL_MS` | `1000` | int ≥ 100 |
-| `OUTBOX_DISPATCH_BATCH_SIZE` | `100` | int 1–1000 |
-| `OUTBOX_CLAIM_TIMEOUT_MS` | `60000` | int ≥ 1000 |
-| `OUTBOX_PUBLISH_TIMEOUT_MS` | `10000` | int ≥ 500 |
-| `OUTBOX_MAX_DELIVERY_ATTEMPTS` | `10` | int 1–100 |
-| `OUTBOX_DELIVERY_BASE_BACKOFF_MS` | `500` | int ≥ 50 |
-| `OUTBOX_DELIVERY_MAX_BACKOFF_MS` | `60000` | int ≥ 1000 |
-| `OUTBOX_MAX_PAYLOAD_BYTES` | `65536` | int ≥ 1024 |
-| `OUTBOX_RETENTION_MAX_AGE_MS` | `604800000` | int ≥ 0 (0 disables) |
-| `OUTBOX_RETENTION_BATCH_SIZE` | `500` | int ≥ 1 |
-| `OUTBOX_RETENTION_EVERY_N_TICKS` | `60` | int ≥ 1 |
+| env var                            | default     | validation           |
+| ---------------------------------- | ----------- | -------------------- |
+| `OUTBOX_DISPATCH_POLL_INTERVAL_MS` | `1000`      | int ≥ 100            |
+| `OUTBOX_DISPATCH_BATCH_SIZE`       | `100`       | int 1–1000           |
+| `OUTBOX_CLAIM_TIMEOUT_MS`          | `60000`     | int ≥ 1000           |
+| `OUTBOX_PUBLISH_TIMEOUT_MS`        | `10000`     | int ≥ 500            |
+| `OUTBOX_MAX_DELIVERY_ATTEMPTS`     | `10`        | int 1–100            |
+| `OUTBOX_DELIVERY_BASE_BACKOFF_MS`  | `500`       | int ≥ 50             |
+| `OUTBOX_DELIVERY_MAX_BACKOFF_MS`   | `60000`     | int ≥ 1000           |
+| `OUTBOX_MAX_PAYLOAD_BYTES`         | `65536`     | int ≥ 1024           |
+| `OUTBOX_RETENTION_MAX_AGE_MS`      | `604800000` | int ≥ 0 (0 disables) |
+| `OUTBOX_RETENTION_BATCH_SIZE`      | `500`       | int ≥ 1              |
+| `OUTBOX_RETENTION_EVERY_N_TICKS`   | `60`        | int ≥ 1              |
 
 Refinements: `OUTBOX_CLAIM_TIMEOUT_MS >= OUTBOX_PUBLISH_TIMEOUT_MS + OUTBOX_DISPATCH_POLL_INTERVAL_MS`;
 `OUTBOX_DELIVERY_MAX_BACKOFF_MS >= OUTBOX_DELIVERY_BASE_BACKOFF_MS`.
@@ -716,6 +772,7 @@ Refinements: `OUTBOX_CLAIM_TIMEOUT_MS >= OUTBOX_PUBLISH_TIMEOUT_MS + OUTBOX_DISP
 ## 17. File manifest
 
 **New**
+
 - `packages/database/src/migrations/migrator.ts` — `OUTBOX_EVENTS_SQL` + `MIGRATIONS` entry (edit)
 - `packages/database/src/migrations/sql/008_outbox_events.sql`
 - `packages/database/src/repositories/contracts/outbox-repository.contract.ts`
@@ -733,6 +790,7 @@ Refinements: `OUTBOX_CLAIM_TIMEOUT_MS >= OUTBOX_PUBLISH_TIMEOUT_MS + OUTBOX_DISP
   `suites/throughput.bench.ts`, `utils/fixtures.ts`
 
 **Changed**
+
 - `packages/contracts/src/index.ts` — `OutboxStatus`, `OutboxEnqueueInput`, `OutboxEventRecord`,
   `DEFAULT_OUTBOX_*`; `BatchClaimOptions.pendingOutbox?`
 - `packages/database/src/transaction.ts` — `outbox` on `TransactionContext`
