@@ -306,3 +306,63 @@ describe('PgOutboxRepository — markPublished / markRetry (fenced)', () => {
     expect((await repo.findByEventId(i.eventId))!.lastError!.length).toBe(2000);
   });
 });
+
+describe('PgOutboxRepository — retention & stats', () => {
+  let pool: DatabasePool;
+  let repo: PgOutboxRepository;
+
+  beforeAll(async () => {
+    pool = createDatabasePool({ connectionString: DEFAULT_DATABASE_URL });
+    await resetDatabase(pool);
+    await runMigrations(pool);
+    repo = new PgOutboxRepository(pool);
+  });
+  afterAll(async () => {
+    await resetDatabase(pool);
+    await pool.close();
+  });
+  beforeEach(async () => {
+    await pool.query('DELETE FROM outbox_events;');
+  });
+
+  it('deletePublishedBefore removes only old PUBLISHED rows, bounded by limit', async () => {
+    const keepPending = input();
+    const oldPublished = input();
+    const recentPublished = input();
+    await repo.enqueueMany([keepPending, oldPublished, recentPublished]);
+    await pool.query(
+      `UPDATE outbox_events SET status='PUBLISHED', published_at = NOW() - INTERVAL '10 days' WHERE id = $1;`,
+      [oldPublished.id],
+    );
+    await pool.query(
+      `UPDATE outbox_events SET status='PUBLISHED', published_at = NOW() WHERE id = $1;`,
+      [recentPublished.id],
+    );
+    const deleted = await repo.deletePublishedBefore(new Date(Date.now() - 7 * 86400000), 100);
+    expect(deleted).toBe(1);
+    expect(await repo.findByEventId(oldPublished.eventId)).toBeNull();
+    expect(await repo.findByEventId(keepPending.eventId)).not.toBeNull();
+    expect(await repo.findByEventId(recentPublished.eventId)).not.toBeNull();
+  });
+
+  it('deletePublishedBefore never touches PENDING/CLAIMED/DEAD', async () => {
+    const dead = input();
+    await repo.enqueue(dead);
+    await pool.query(
+      `UPDATE outbox_events SET status='DEAD', published_at = NOW() - INTERVAL '30 days' WHERE id = $1;`,
+      [dead.id],
+    );
+    expect(await repo.deletePublishedBefore(new Date(), 100)).toBe(0);
+    expect((await repo.findByEventId(dead.eventId))!.status).toBe('DEAD');
+  });
+
+  it('stats reports per-status counts and oldest pending age', async () => {
+    await repo.enqueueMany([input(), input()]);
+    const s = await repo.stats();
+    expect(s.pending).toBe(2);
+    expect(s.claimed).toBe(0);
+    expect(s.published).toBe(0);
+    expect(s.dead).toBe(0);
+    expect(s.oldestPendingAgeMs).toBeGreaterThanOrEqual(0);
+  });
+});

@@ -30,8 +30,8 @@ const SELECT_COLS = `
 const LAST_ERROR_MAX = 2000;
 
 /**
- * PostgreSQL-backed {@link OutboxRepository}. Enqueue paths are fully implemented here;
- * the dispatch/prune methods are wired stubs replaced in later PR 21 tasks.
+ * PostgreSQL-backed {@link OutboxRepository}. Enqueue, dispatch (claim → publish/retry),
+ * retention sweep, and stats are all implemented here.
  */
 export class PgOutboxRepository implements OutboxRepository {
   private readonly maxPayloadBytes: number;
@@ -149,7 +149,7 @@ export class PgOutboxRepository implements OutboxRepository {
   }
 
   // ---------------------------------------------------------------------------
-  // Dispatch / prune surface — wired with real signatures, bodies land in Tasks 6-8.
+  // Dispatch / prune surface.
   // ---------------------------------------------------------------------------
 
   public async claimBatch(options: OutboxClaimOptions): Promise<OutboxClaimedRow[]> {
@@ -233,12 +233,58 @@ export class PgOutboxRepository implements OutboxRepository {
     }
   }
 
-  public deletePublishedBefore(_cutoff: Date, _limit: number): Promise<number> {
-    throw new Error('not implemented until Task 8');
+  public async deletePublishedBefore(cutoff: Date, limit: number): Promise<number> {
+    try {
+      const res = await this.client.query(
+        `DELETE FROM outbox_events
+         WHERE id IN (
+           SELECT id FROM outbox_events
+           WHERE status = 'PUBLISHED' AND published_at < $1
+           ORDER BY published_at
+           LIMIT $2
+         );`,
+        [cutoff, limit],
+      );
+      return res.rowCount ?? 0;
+    } catch (err) {
+      throw new PersistenceError(
+        `Failed to sweep published outbox rows: ${(err as Error).message}`,
+        err as Error,
+      );
+    }
   }
 
-  public stats(): Promise<OutboxStats> {
-    throw new Error('not implemented until Task 8');
+  public async stats(): Promise<OutboxStats> {
+    try {
+      const res = await this.client.query<{
+        pending: string;
+        claimed: string;
+        published: string;
+        dead: string;
+        oldest_ms: string | null;
+      }>(
+        `SELECT
+           COUNT(*) FILTER (WHERE status = 'PENDING')   AS pending,
+           COUNT(*) FILTER (WHERE status = 'CLAIMED')   AS claimed,
+           COUNT(*) FILTER (WHERE status = 'PUBLISHED') AS published,
+           COUNT(*) FILTER (WHERE status = 'DEAD')      AS dead,
+           EXTRACT(EPOCH FROM (NOW() - MIN(occurred_at) FILTER (WHERE status = 'PENDING'))) * 1000 AS oldest_ms
+         FROM outbox_events;`,
+      );
+      const r = res.rows[0]!;
+      return {
+        pending: Number(r.pending),
+        claimed: Number(r.claimed),
+        published: Number(r.published),
+        dead: Number(r.dead),
+        oldestPendingAgeMs: r.oldest_ms === null ? null : Math.round(Number(r.oldest_ms)),
+      };
+    } catch (err) {
+      throw new PersistenceError(
+        `Failed to read outbox stats: ${(err as Error).message}`,
+        err as Error,
+      );
+    }
   }
 
   private mapRow(row: OutboxEventRow): OutboxEventRecord {
