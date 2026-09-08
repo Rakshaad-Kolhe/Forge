@@ -11,6 +11,7 @@ export {
   DatabaseError,
   EntityNotFoundError,
   MigrationError,
+  OutboxPayloadError,
   PersistenceError,
   sanitizeConnectionString,
 } from './errors.js';
@@ -66,6 +67,7 @@ export type {
   DeadLetterJobRow,
   JobAttemptRow,
   JobRow,
+  OutboxEventRow,
   PipelineRow,
   PipelineRunRow,
   WorkerLeaseRow,

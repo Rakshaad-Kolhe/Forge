@@ -102,6 +102,33 @@ export interface WorkerLeaseRow {
 }
 
 /**
+ * Relational representation of an outbox_events record.
+ */
+export interface OutboxEventRow {
+  id: string;
+  event_id: string;
+  event_type: string;
+  version: number;
+  occurred_at: string | Date;
+  pipeline_id: string | null;
+  run_id: string | null;
+  job_id: string | null;
+  attempt_id: string | null;
+  worker_id: string | null;
+  payload: unknown;
+  status: string;
+  delivery_attempt_count: number | string;
+  dispatch_count: number | string;
+  available_at: string | Date;
+  claimed_at: string | Date | null;
+  claimed_by: string | null;
+  claim_token: string | null;
+  published_at: string | Date | null;
+  last_error: string | null;
+  created_at: string | Date;
+}
+
+/**
  * Relational representation of a DeadLetterJob record.
  */
 export interface DeadLetterJobRow {
