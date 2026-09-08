@@ -100,3 +100,19 @@ export interface WorkerLeaseRow {
   expires_at: Date;
   created_at: Date;
 }
+
+/**
+ * Relational representation of a DeadLetterJob record.
+ */
+export interface DeadLetterJobRow {
+  id: string;
+  job_id: string;
+  pipeline_run_id: string;
+  reason: string;
+  failed_attempt_count: number;
+  last_attempt_id: string | null;
+  last_worker_id: string | null;
+  error_details: string | null;
+  metadata: unknown;
+  created_at: Date;
+}

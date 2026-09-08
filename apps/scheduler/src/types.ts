@@ -6,7 +6,7 @@ import type {
   UnschedulableDecision,
   UnschedulableReason,
 } from '@forge/contracts';
-import type { WorkerLeaseRepository } from '@forge/database';
+import type { LeaseRecoveryService, WorkerLeaseRepository } from '@forge/database';
 import type { Logger } from '@forge/logging';
 import type { Job, WorkerCandidate } from '@forge/pipeline';
 import type { WorkerLiveness, WorkerStatus } from '@forge/worker-registry';
@@ -19,6 +19,7 @@ export type {
   UnschedulableDecision,
   UnschedulableReason,
   WorkerLeaseRepository,
+  LeaseRecoveryService,
 };
 
 /**
@@ -127,5 +128,6 @@ export interface SchedulerOptions {
   readonly matcher?: EligibilityMatcher;
   readonly leaseRepository?: WorkerLeaseRepository;
   readonly leaseDurationMs?: number;
+  readonly recoveryService?: LeaseRecoveryService;
   readonly logger?: Logger;
 }

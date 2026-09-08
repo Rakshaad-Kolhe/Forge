@@ -506,7 +506,7 @@ describe('Worker Retry & Attempt Orchestration Integration (Real PostgreSQL + Re
     }
 
     // Clean up test jobs
-    await pool.query("DELETE FROM jobs WHERE id IN ($1, $2, $3)", [
+    await pool.query('DELETE FROM jobs WHERE id IN ($1, $2, $3)', [
       highRetryJob.id,
       lowRetryJob.id,
       futureJob.id,

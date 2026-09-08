@@ -1,4 +1,5 @@
 import type pg from 'pg';
+import { PgDeadLetterRepository } from './repositories/pg-dead-letter-repository.js';
 import { PgJobAttemptRepository } from './repositories/pg-job-attempt-repository.js';
 import { PgJobRepository } from './repositories/pg-job-repository.js';
 import { PgPipelineRepository } from './repositories/pg-pipeline-repository.js';
@@ -13,6 +14,7 @@ export interface TransactionContext {
   jobs: PgJobRepository;
   jobAttempts: PgJobAttemptRepository;
   workerLeases: PgWorkerLeaseRepository;
+  deadLetterJobs: PgDeadLetterRepository;
 }
 
 /**
@@ -37,6 +39,7 @@ export async function withTransaction<T>(
       jobs: new PgJobRepository(client),
       jobAttempts: new PgJobAttemptRepository(client),
       workerLeases: new PgWorkerLeaseRepository(client),
+      deadLetterJobs: new PgDeadLetterRepository(client),
     };
 
     const result = await callback(txContext);

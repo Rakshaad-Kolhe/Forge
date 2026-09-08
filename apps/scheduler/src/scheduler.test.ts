@@ -1,3 +1,5 @@
+import type { UnschedulableDecision } from '@forge/contracts';
+import type { LeaseRecoveryService } from '@forge/database';
 import { createLogger } from '@forge/logging';
 import { createJobId, createPipelineRunId, Job, type WorkerCandidate } from '@forge/pipeline';
 import { describe, expect, it, vi } from 'vitest';
@@ -804,6 +806,113 @@ describe('Scheduler — evaluatePrioritizedWork & schedulePrioritized', () => {
       });
 
       await expect(scheduler.scheduleDueJobs()).rejects.toThrow(JobSourceError);
+    });
+  });
+
+  describe('Scheduler — Worker Draining & Lease Recovery Integration', () => {
+    it('strictly excludes DRAINING + ALIVE candidate workers from job placement', async () => {
+      const drainingWorker: WorkerCandidate = {
+        workerId: 'worker-draining',
+        ...({
+          status: 'DRAINING',
+          liveness: 'ALIVE',
+          worker: {
+            status: 'DRAINING',
+            workerId: 'worker-draining',
+            capabilities: { executors: ['docker'] },
+            resources: { cpuCores: 4, memoryBytes: 8192 },
+          },
+        } as unknown as WorkerCandidate),
+      };
+
+      const job = new Job({
+        id: createJobId('job-drain-test'),
+        pipelineRunId: createPipelineRunId('run-1'),
+        stepName: 'test',
+        command: 'echo 1',
+        requirements: { executor: 'docker' },
+      });
+
+      // Pure evaluatePlacement check
+      const placementDecision = evaluatePlacement(job, [drainingWorker]);
+      expect(placementDecision.status).toBe('UNSCHEDULABLE');
+      expect((placementDecision as UnschedulableDecision).reason).toBe('NO_ELIGIBLE_WORKER');
+
+      // Full scheduler.schedule check
+      const scheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([drainingWorker]) },
+      });
+
+      const decision = await scheduler.schedule(job);
+      expect(decision.status).toBe('UNSCHEDULABLE');
+      expect((decision as UnschedulableDecision).reason).toBe('NO_ELIGIBLE_WORKER');
+    });
+
+    it('delegates recoverExpiredLeases to configured recoveryService', async () => {
+      const mockRecoveryService = {
+        recoverExpiredLeases: vi.fn().mockResolvedValue({
+          recoveredCount: 1,
+          details: [
+            {
+              leaseId: 'lease-1',
+              jobId: 'job-1',
+              workerId: 'worker-crashed',
+              action: 'REQUEUED' as const,
+              nextAttemptAt: new Date(),
+            },
+          ],
+        }),
+      };
+
+      const scheduler = new ForgeScheduler({
+        recoveryService: mockRecoveryService as unknown as LeaseRecoveryService,
+      });
+
+      const result = await scheduler.recoverExpiredLeases({ batchSize: 5 });
+      expect(mockRecoveryService.recoverExpiredLeases).toHaveBeenCalledWith({ batchSize: 5 });
+      expect(result.recoveredCount).toBe(1);
+      expect(result.details[0]?.action).toBe('REQUEUED');
+    });
+
+    it('throws if recoverExpiredLeases is called without recoveryService', async () => {
+      const scheduler = new ForgeScheduler();
+      await expect(scheduler.recoverExpiredLeases()).rejects.toThrow(
+        /LeaseRecoveryService is required to recover expired leases/,
+      );
+    });
+
+    it('starts and cleanly stops periodic recovery loop without overlapping sweeps', async () => {
+      let sweepCount = 0;
+      const mockRecoveryService = {
+        recoverExpiredLeases: vi.fn(async () => {
+          sweepCount++;
+          // Simulate 20ms sweep delay
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return { recoveredCount: 0, details: [] };
+        }),
+      };
+
+      const scheduler = new ForgeScheduler({
+        recoveryService: mockRecoveryService as unknown as LeaseRecoveryService,
+      });
+
+      // Start loop with 30ms interval
+      scheduler.startRecoveryLoop(30);
+
+      // Calling startRecoveryLoop again is a no-op
+      scheduler.startRecoveryLoop(30);
+
+      // Wait 100ms for sweeps to fire
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Stop loop cleanly
+      await scheduler.stopRecoveryLoop();
+      const finalCount = sweepCount;
+      expect(finalCount).toBeGreaterThanOrEqual(1);
+
+      // Wait another 50ms and verify no further sweeps fired
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(sweepCount).toBe(finalCount);
     });
   });
 });

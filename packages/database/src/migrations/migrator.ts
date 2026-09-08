@@ -145,6 +145,26 @@ ON jobs(status, next_attempt_at, priority DESC)
 WHERE status = 'QUEUED';
 `;
 
+export const DEAD_LETTER_JOBS_SQL = `-- Forge V2: PR 15 - Dead-Letter Queue (DLQ)
+CREATE TABLE IF NOT EXISTS dead_letter_jobs (
+  id VARCHAR(255) PRIMARY KEY,
+  job_id VARCHAR(255) NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  pipeline_run_id VARCHAR(255) NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+  reason VARCHAR(100) NOT NULL,
+  failed_attempt_count INTEGER NOT NULL,
+  last_attempt_id VARCHAR(255) REFERENCES job_attempts(id) ON DELETE SET NULL,
+  last_worker_id VARCHAR(255),
+  error_details TEXT,
+  metadata JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_dead_letter_jobs_job_id UNIQUE (job_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dead_letter_jobs_pipeline_run_id ON dead_letter_jobs(pipeline_run_id);
+CREATE INDEX IF NOT EXISTS idx_dead_letter_jobs_reason ON dead_letter_jobs(reason);
+CREATE INDEX IF NOT EXISTS idx_dead_letter_jobs_created_at ON dead_letter_jobs(created_at);
+`;
+
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     name: '001_initial_schema',
@@ -169,6 +189,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   {
     name: '006_job_retries',
     sql: JOB_RETRIES_SQL,
+  },
+  {
+    name: '007_dead_letter_jobs',
+    sql: DEAD_LETTER_JOBS_SQL,
   },
 ]);
 
@@ -235,6 +259,7 @@ export async function runMigrations(client: DatabaseClient): Promise<string[]> {
  */
 export async function resetDatabase(client: DatabaseClient): Promise<void> {
   await client.query(`
+    DROP TABLE IF EXISTS dead_letter_jobs CASCADE;
     DROP TABLE IF EXISTS worker_leases CASCADE;
     DROP TABLE IF EXISTS workers CASCADE;
     DROP TABLE IF EXISTS job_attempts CASCADE;

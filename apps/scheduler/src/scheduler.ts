@@ -1,6 +1,8 @@
 import {
   DEFAULT_JOB_PRIORITY,
   type JobRequirements,
+  type LeaseRecoveryOptions,
+  type RecoverExpiredLeasesResult,
   type ScheduleDecision,
   type ScheduledDecision,
   type UnschedulableDecision,
@@ -18,7 +20,7 @@ import type { JobQueue, QueueDelivery } from '@forge/queue';
 import { JobNotFoundError, JobSourceError, WorkerSourceError } from './errors.js';
 import { highestPriorityFirstPolicy } from './job-policy.js';
 import { deterministicFirstEligiblePolicy, getWorkerCandidateId } from './policy.js';
-import type { WorkerLeaseRepository } from '@forge/database';
+import type { LeaseRecoveryService, WorkerLeaseRepository } from '@forge/database';
 import type {
   EligibilityMatcher,
   JobOrderingPolicy,
@@ -279,7 +281,10 @@ export class ForgeScheduler implements Scheduler {
   private readonly matcher: EligibilityMatcher;
   private readonly leaseRepository?: WorkerLeaseRepository;
   private readonly leaseDurationMs: number;
+  private readonly recoveryService?: LeaseRecoveryService;
   private readonly logger?: Logger;
+  private recoveryTimer?: NodeJS.Timeout;
+  private isSweeping = false;
 
   constructor(options?: SchedulerOptions) {
     this.workerSource = options?.workerSource;
@@ -289,6 +294,7 @@ export class ForgeScheduler implements Scheduler {
     this.matcher = options?.matcher ?? filterEligibleWorkers;
     this.leaseRepository = options?.leaseRepository;
     this.leaseDurationMs = options?.leaseDurationMs ?? 30000;
+    this.recoveryService = options?.recoveryService;
     this.logger = options?.logger;
   }
 
@@ -679,5 +685,65 @@ export class ForgeScheduler implements Scheduler {
       deliveries: Object.freeze(deliveries),
       result,
     };
+  }
+
+  /**
+   * Sweeps and recovers expired active leases via the configured LeaseRecoveryService.
+   */
+  public async recoverExpiredLeases(
+    options?: LeaseRecoveryOptions,
+  ): Promise<RecoverExpiredLeasesResult> {
+    if (!this.recoveryService) {
+      throw new Error('LeaseRecoveryService is required to recover expired leases');
+    }
+    return this.recoveryService.recoverExpiredLeases(options);
+  }
+
+  /**
+   * Starts a non-overlapping periodic background recovery sweep loop.
+   */
+  public startRecoveryLoop(intervalMs = 5000): void {
+    if (this.recoveryTimer) {
+      return;
+    }
+    if (!this.recoveryService) {
+      throw new Error('LeaseRecoveryService is required to start recovery loop');
+    }
+
+    this.recoveryTimer = setInterval(async () => {
+      if (this.isSweeping) {
+        return;
+      }
+      this.isSweeping = true;
+      try {
+        const result = await this.recoverExpiredLeases();
+        if (result.recoveredCount > 0) {
+          this.logger?.info('Background lease recovery sweep completed', {
+            recoveredCount: result.recoveredCount,
+          });
+        }
+      } catch (err: unknown) {
+        this.logger?.error('Error during background lease recovery sweep', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        this.isSweeping = false;
+      }
+    }, intervalMs);
+
+    this.recoveryTimer.unref();
+  }
+
+  /**
+   * Stops the background recovery sweep loop cleanly, waiting for any in-flight sweep to finish.
+   */
+  public async stopRecoveryLoop(): Promise<void> {
+    if (this.recoveryTimer) {
+      clearInterval(this.recoveryTimer);
+      this.recoveryTimer = undefined;
+    }
+    while (this.isSweeping) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   }
 }

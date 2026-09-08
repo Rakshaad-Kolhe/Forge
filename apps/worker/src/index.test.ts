@@ -14,7 +14,7 @@ import {
 } from '@forge/worker-registry';
 
 describe('Worker Service Shell', () => {
-  it('starts successfully and logs startup event in standalone mode', () => {
+  it('starts successfully and logs startup event in standalone mode', async () => {
     const logs: string[] = [];
     const testLogger = createLogger({
       service: 'worker',
@@ -27,7 +27,7 @@ describe('Worker Service Shell', () => {
     expect(worker.workerId).toBeDefined();
     expect(worker.getStatus()).toBe('READY');
 
-    worker.stop();
+    await worker.stop();
     expect(logs.some((l) => l.includes('Forge Worker service shell stopped'))).toBe(true);
   });
 
@@ -717,6 +717,173 @@ describe('Worker Service Shell', () => {
 
       // Lease is released
       expect(mockLeaseRepo.release).toHaveBeenCalled();
+    });
+  });
+
+  describe('Graceful Shutdown & Drain Lifecycle', () => {
+    it('transitions READY -> DRAINING and rejects new claims and executions', async () => {
+      const heartbeats: { id: WorkerId; status?: WorkerStatus }[] = [];
+      const mockRegistry = {
+        register: vi.fn().mockResolvedValue({}),
+        heartbeat: vi.fn(async (id: WorkerId, status?: WorkerStatus) => {
+          heartbeats.push({ id, status });
+        }),
+        deregister: vi.fn().mockResolvedValue({}),
+        getWorker: vi.fn(),
+        listWorkers: vi.fn(),
+      } as unknown as WorkerRegistry;
+
+      const mockLeaseRepo = {
+        claim: vi.fn(),
+        renew: vi.fn(),
+        release: vi.fn(),
+        findActiveByJobId: vi.fn(),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      const worker = startWorker({
+        workerId: 'drain-worker-1',
+        registry: mockRegistry,
+        leaseRepository: mockLeaseRepo,
+      });
+
+      expect(worker.getStatus()).toBe('READY');
+
+      // Initiate drain
+      await worker.drain();
+      expect(worker.getStatus()).toBe('DRAINING');
+      expect(mockRegistry.heartbeat).toHaveBeenCalledWith('drain-worker-1', 'DRAINING');
+
+      // Reject new job claim during DRAINING
+      const claimResult = await worker.claimJob('job-rejected-1');
+      expect(claimResult.status).toBe('NOT_CLAIMABLE');
+      if (claimResult.status === 'NOT_CLAIMABLE') {
+        expect(claimResult.reason).toBe('JOB_NOT_CLAIMABLE');
+        expect(claimResult.details).toContain('is in DRAINING state');
+      }
+      expect(mockLeaseRepo.claim).not.toHaveBeenCalled();
+
+      // Reject new job execution during DRAINING
+      const mockJob = { id: 'job-rejected-2' } as Job;
+      await expect(worker.executeJob({ job: mockJob, leaseId: 'lease-fake' })).rejects.toThrow(
+        /is in DRAINING state and not accepting new executions/,
+      );
+
+      // Now stop the worker
+      await worker.stop();
+      expect(worker.getStatus()).toBe('OFFLINE');
+      expect(mockRegistry.deregister).toHaveBeenCalledWith('drain-worker-1');
+    });
+
+    it('waits for in-flight executions to finish during drain before releasing leases', async () => {
+      let executionFinished = false;
+      const mockExecutor: Executor = {
+        name: 'mock',
+        execute: vi.fn(async () => {
+          // Simulate 50ms execution delay
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          executionFinished = true;
+          return {
+            status: 'SUCCEEDED' as const,
+            exitCode: 0,
+            startedAt: new Date(),
+            finishedAt: new Date(),
+            durationMs: 50,
+            stdout: 'done',
+            stderr: '',
+            truncated: false,
+          };
+        }),
+        isAvailable: vi.fn().mockResolvedValue(true),
+      };
+
+      const mockLeaseRepo = {
+        claim: vi.fn(),
+        renew: vi.fn().mockResolvedValue({ status: 'RENEWED' }),
+        release: vi.fn().mockResolvedValue({ status: 'RELEASED', leaseId: 'l1', jobId: 'j1' }),
+        findActiveByJobId: vi.fn().mockResolvedValue({
+          id: 'l1',
+          jobId: 'j1',
+          workerId: 'drain-worker-2',
+          status: 'ACTIVE',
+          expiresAt: new Date(Date.now() + 60000),
+        }),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      const worker = startWorker({
+        workerId: 'drain-worker-2',
+        executor: mockExecutor,
+        leaseRepository: mockLeaseRepo,
+        drainTimeoutMs: 1000,
+      });
+
+      const mockAttempt = {
+        id: 'att-1',
+        attemptNumber: 1,
+        status: 'PENDING',
+        start: vi.fn(),
+        succeed: vi.fn(),
+        fail: vi.fn(),
+        isTerminal: () => false,
+      };
+
+      const mockJob = {
+        id: 'j1',
+        command: 'echo hello',
+        status: 'QUEUED',
+        createAttempt: vi.fn().mockReturnValue(mockAttempt),
+        start: vi.fn(),
+        succeed: vi.fn(),
+        fail: vi.fn(),
+      };
+
+      // Start execution
+      const execPromise = worker.executeJob({
+        job: mockJob as unknown as Job,
+        leaseId: 'l1',
+      });
+
+      // While execution is in-flight, trigger stop() which will drain
+      expect(executionFinished).toBe(false);
+      const stopPromise = worker.stop();
+
+      await Promise.all([execPromise, stopPromise]);
+
+      expect(executionFinished).toBe(true);
+      expect(worker.getStatus()).toBe('OFFLINE');
+      expect(mockLeaseRepo.release).toHaveBeenCalled();
+    });
+
+    it('repeated stop and drain calls are idempotent', async () => {
+      const deregisterFn = vi.fn().mockResolvedValue({});
+      const mockRegistry = {
+        register: vi.fn().mockResolvedValue({}),
+        heartbeat: vi.fn().mockResolvedValue({}),
+        deregister: deregisterFn,
+        getWorker: vi.fn(),
+        listWorkers: vi.fn(),
+      } as unknown as WorkerRegistry;
+
+      const worker = startWorker({
+        workerId: 'idempotent-worker',
+        registry: mockRegistry,
+      });
+
+      // Call drain twice, then stop twice concurrently
+      await Promise.all([worker.drain(), worker.drain(), worker.stop(), worker.stop()]);
+
+      expect(worker.getStatus()).toBe('OFFLINE');
+      // Deregister should only be called once
+      expect(deregisterFn).toHaveBeenCalledTimes(1);
+
+      // Subsequent stop call is also safe
+      await worker.stop();
+      expect(deregisterFn).toHaveBeenCalledTimes(1);
     });
   });
 });
