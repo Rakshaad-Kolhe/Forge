@@ -13,6 +13,7 @@
     "@forge/config": "*",
     "@forge/contracts": "*",
     "@forge/database": "*",
+    "@forge/events": "*",
     "@forge/logging": "*",
     "@forge/pipeline": "*",
     "@forge/queue": "*",

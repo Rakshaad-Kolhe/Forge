@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 18: Batched Worker Lease Claiming & Persistent Scheduler Optimization**.
+This repository is currently at **PR 20: Typed Event Architecture & Execution Lifecycle Events**.
 
 ---
 
@@ -22,15 +22,16 @@ This repository is currently at **PR 18: Batched Worker Lease Claiming & Persist
   - `@forge/queue`: Redis-backed reliable FIFO job queue (At-least-once delivery, explicit acknowledgement, queue depth, in-flight visibility tracking, crash/unacknowledged recovery, and competing consumer coordination).
   - `@forge/worker-registry`: Distributed worker registration and liveness coordination (Durable worker metadata and hardware capacity in PostgreSQL, transient heartbeat state with TTL in Redis, crash/stale detection, graceful deregistration, and isolated lifecycle state machines decoupled from lease ownership).
   - `@forge/executor`: Sandboxed container execution engine implementing `Executor` with production-oriented `DockerExecutor`, ephemeral temporary workspace management, non-root user execution (`--user 1000:1000`), container isolation (no privileged mode, no host Docker socket mount, bridge networking), resource limit enforcement (CPU, memory, unverified GPU status), wall-clock timeout supervision (`docker stop` -> `docker kill`), bounded stdout/stderr capture with truncation protection, and guaranteed teardown in `finally` blocks.
+  - `@forge/events`: Neutral, transport-independent typed event architecture — versioned `ForgeEventEnvelope` with Forge-generated immutable `event_id` (UUID v4) and domain correlation ids, discriminated `ForgeEvent` union with compile-time exhaustiveness, zod validation (`parseForgeEvent`, unknown-field stripping, unknown-version rejection), `EventPublisher` / `EventSubscriber` seam, `InProcessEventBus` (subscriber-failure isolation, explicit idempotent shutdown, no global singleton, no deduplication), and post-execution `JobLogChunk` derivation from the bounded PR 19 capture. Notifications of committed state transitions only — at-least-once, no exactly-once delivery, no global ordering, no outbox; PostgreSQL stays authoritative.
 - **Service Shells & Applications**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
-  - `apps/scheduler`: Task scheduler service (`@forge/scheduler`) providing operational eligibility evaluation (`READY + ALIVE`), exclusion of `DRAINING` workers, deterministic worker selection policy (`DeterministicFirstEligible`), baseline priority scheduling policy (`HighestPriorityFirstPolicy`), starvation-prevention queue aging policy (`FairAgingPriorityPolicy` computing dynamic effective priority with bounded age bonus), virtual time injection across ordering and placement, canonical alphanumeric tie-breaking, retry fairness reset invariant (`nextAttemptAt` anchor), non-blocking unschedulable semantics, batch evaluation, unacknowledged queue recoverability, atomic distributed worker lease acquisition via PostgreSQL, due retry job discovery (`scheduleDueJobs`) with non-blocking backoff awareness (`RETRY_BACKOFF_ACTIVE`), and integrated lease recovery loop (`recoverExpiredLeases`, `startRecoveryLoop`).
-  - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, lease lifecycle management (`claimJob`, `renewLease`, `releaseLease`), containerized job execution (`executeJob`) with active lease validation, periodic lease renewal, definitive lease-loss abort protection, pure retry policy evaluation, transactional PostgreSQL persistence, per-attempt lease isolation enabling worker hopping, three-phase shutdown lifecycle (`READY -> DRAINING -> OFFLINE`), immediate claim/execution rejection during drain, and bounded in-flight execution drain supervision.
+  - `apps/scheduler`: Task scheduler service (`@forge/scheduler`) providing operational eligibility evaluation (`READY + ALIVE`), exclusion of `DRAINING` workers, deterministic worker selection policy (`DeterministicFirstEligible`), baseline priority scheduling policy (`HighestPriorityFirstPolicy`), starvation-prevention queue aging policy (`FairAgingPriorityPolicy` computing dynamic effective priority with bounded age bonus), virtual time injection across ordering and placement, canonical alphanumeric tie-breaking, retry fairness reset invariant (`nextAttemptAt` anchor), non-blocking unschedulable semantics, batch evaluation, unacknowledged queue recoverability, atomic distributed worker lease acquisition via PostgreSQL, due retry job discovery (`scheduleDueJobs`) with non-blocking backoff awareness (`RETRY_BACKOFF_ACTIVE`), integrated lease recovery loop (`recoverExpiredLeases`, `startRecoveryLoop`), and opt-in best-effort typed lifecycle event emission (`JobClaimed` on lease acquisition, `WorkerLost` per reconciled lease) after the authoritative commit.
+  - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, lease lifecycle management (`claimJob`, `renewLease`, `releaseLease`), containerized job execution (`executeJob`) with active lease validation, periodic lease renewal, definitive lease-loss abort protection, pure retry policy evaluation, transactional PostgreSQL persistence, per-attempt lease isolation enabling worker hopping, three-phase shutdown lifecycle (`READY -> DRAINING -> OFFLINE`), immediate claim/execution rejection during drain, bounded in-flight execution drain supervision, and opt-in best-effort typed lifecycle event emission (`WorkerRegistered`, `WorkerHeartbeat`, `JobStarted`, derived `JobLogChunk`, terminal `JobSucceeded` / `JobFailed` / `JobCancelled`, and `JobQueued` on retry re-queue) after each authoritative persist.
   - `apps/cli`: CLI executable supporting `--help` and `--version`.
   - `apps/web`: Next.js landing page displaying architectural boundaries.
 - **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, capability/resource matching, job priority validation, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, worker service shell, scheduler selection policies, priority ordering, worker lease lifecycle & concurrency races, Docker executor unit & live container integration, worker execution persistence integration, live end-to-end retry & attempt orchestration integration, PostgreSQL lease recovery & DLQ integration, live Docker worker loss recovery & graceful drain integration, and controlled starvation prevention experiments.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
-- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, worker registration spec, resource matching spec, scheduler architecture spec, distributed worker leases spec, container executor spec, retry policies & attempt orchestration spec, reliability & worker loss recovery spec, and fairness & queue aging spec in `docs/architecture/`.
+- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, worker registration spec, resource matching spec, scheduler architecture spec, distributed worker leases spec, container executor spec, retry policies & attempt orchestration spec, reliability & worker loss recovery spec, fairness & queue aging spec, and typed event architecture spec (`events.md`) in `docs/architecture/`.
 
 ### Planned (Future PRs)
 
@@ -62,7 +63,8 @@ forge/
 │   ├── redis/          # Redis connection, health checks, coordination primitives
 │   ├── queue/          # Redis-backed FIFO job queue and recovery primitives
 │   ├── worker-registry/# Worker registration, metadata and heartbeat coordination
-│   └── executor/       # Container executor and ephemeral execution engine
+│   ├── executor/       # Container executor and ephemeral execution engine
+│   └── events/         # Typed lifecycle event contract, publisher seam, in-process bus
 ├── benchmarks/
 │   └── scheduler/      # Reproducible scheduler performance benchmarking harness
 ├── docs/
@@ -79,6 +81,7 @@ forge/
 │       ├── retry.md             # Retry policies, backoff & attempt orchestration
 │       ├── reliability.md       # Reliability, worker loss recovery & DLQ
 │       ├── fairness.md          # Fairness, queue aging & starvation prevention
+│       ├── events.md            # Typed event architecture & execution lifecycle events
 │       ├── domain-model.md # Domain model & state machines specification
 │       ├── glossary.md # Architectural domain glossary
 │       ├── invariants.md # Non-negotiable architectural rules
@@ -202,6 +205,7 @@ npm run build -w apps/web
 - [Retry Policies, Backoff & Attempt Orchestration](docs/architecture/retry.md)
 - [Reliability, Worker Loss Recovery & Graceful Shutdown](docs/architecture/reliability.md)
 - [Fairness, Queue Aging & Starvation Prevention](docs/architecture/fairness.md)
+- [Typed Event Architecture & Execution Lifecycle Events](docs/architecture/events.md)
 - [Scheduler Baseline Performance Specification](docs/benchmarks/scheduler-baseline.md)
 - [Architecture Glossary](docs/architecture/glossary.md)
 - [Architectural Invariants Catalog](docs/architecture/invariants.md)

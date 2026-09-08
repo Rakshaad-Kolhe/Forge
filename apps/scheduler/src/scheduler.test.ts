@@ -1,5 +1,6 @@
 import type { UnschedulableDecision } from '@forge/contracts';
 import type { LeaseRecoveryService } from '@forge/database';
+import { InProcessEventBus, type ForgeEvent } from '@forge/events';
 import { createLogger } from '@forge/logging';
 import { createJobId, createPipelineRunId, Job, type WorkerCandidate } from '@forge/pipeline';
 import { describe, expect, it, vi } from 'vitest';
@@ -1305,5 +1306,249 @@ describe('Scheduler — evaluatePrioritizedWork & schedulePrioritized', () => {
       expect(result.orderedDecisions[0]!.jobId).toBe('job-due-low');
       expect(result.orderedDecisions[1]!.jobId).toBe('job-due-high');
     });
+  });
+});
+
+describe('Scheduler — lifecycle events (PR 20)', () => {
+  const evWorker: WorkerCandidate = {
+    workerId: 'worker-ev',
+    capabilities: { executors: ['docker'] },
+    resources: { cpuCores: 4, memoryBytes: 8192 },
+    ...({ status: 'READY', liveness: 'ALIVE' } as unknown as WorkerCandidate),
+  };
+
+  const evJob = (): Job =>
+    new Job({
+      id: createJobId('job-ev-1'),
+      pipelineRunId: createPipelineRunId('run-ev'),
+      stepName: 'ev-task',
+      command: 'echo ev',
+      priority: 0,
+      requirements: { executor: 'docker', cpuCores: 1, memoryBytes: 1024 },
+    });
+
+  const leaseFor = (jobId: string, workerId: string) => ({
+    id: `lease-${jobId}`,
+    jobId,
+    workerId,
+    status: 'ACTIVE' as const,
+    durationMs: 30000,
+    acquiredAt: new Date('2026-09-08T12:00:00.000Z'),
+    renewedAt: new Date('2026-09-08T12:00:00.000Z'),
+    expiresAt: new Date('2026-09-08T12:00:30.000Z'),
+    createdAt: new Date('2026-09-08T12:00:00.000Z'),
+  });
+
+  it('emits JobClaimed after a single lease acquisition', async () => {
+    const bus = new InProcessEventBus();
+    const seen: ForgeEvent[] = [];
+    bus.subscribe((e) => void seen.push(e));
+
+    const mockLeaseRepo = {
+      claim: vi.fn().mockResolvedValue({
+        status: 'ACQUIRED',
+        lease: leaseFor('job-ev-1', 'worker-ev'),
+        isIdempotent: false,
+      }),
+      renew: vi.fn(),
+      release: vi.fn(),
+      findActiveByJobId: vi.fn(),
+      findById: vi.fn(),
+      findByWorkerId: vi.fn(),
+      reclaimExpiredLeases: vi.fn(),
+    };
+
+    const scheduler = new ForgeScheduler({
+      workerSource: { listWorkers: vi.fn().mockResolvedValue([evWorker]) },
+      leaseRepository: mockLeaseRepo,
+      eventPublisher: bus,
+    });
+
+    const decision = await scheduler.schedule(evJob());
+    expect(decision.status).toBe('SCHEDULED');
+
+    const claimed = seen.filter((e) => e.event_type === 'JobClaimed');
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]).toMatchObject({
+      event_type: 'JobClaimed',
+      job_id: 'job-ev-1',
+      worker_id: 'worker-ev',
+      payload: {
+        job_id: 'job-ev-1',
+        worker_id: 'worker-ev',
+        lease_id: 'lease-job-ev-1',
+        lease_expires_at: '2026-09-08T12:00:30.000Z',
+      },
+    });
+    await bus.close();
+  });
+
+  it('emits one JobClaimed per acquired item on the batched claim path', async () => {
+    const bus = new InProcessEventBus();
+    const seen: ForgeEvent[] = [];
+    bus.subscribe((e) => void seen.push(e));
+
+    const jobA = new Job({
+      id: createJobId('job-ev-a'),
+      pipelineRunId: createPipelineRunId('run-ev'),
+      stepName: 'a',
+      command: 'echo a',
+      priority: 10,
+      requirements: { executor: 'docker', cpuCores: 1, memoryBytes: 1024 },
+    });
+    const jobB = new Job({
+      id: createJobId('job-ev-b'),
+      pipelineRunId: createPipelineRunId('run-ev'),
+      stepName: 'b',
+      command: 'echo b',
+      priority: 5,
+      requirements: { executor: 'docker', cpuCores: 1, memoryBytes: 1024 },
+    });
+
+    const mockLeaseRepo = {
+      claim: vi.fn(),
+      claimBatch: vi.fn().mockResolvedValue({
+        results: [
+          {
+            jobId: 'job-ev-a',
+            workerId: 'worker-ev',
+            status: 'ACQUIRED',
+            lease: leaseFor('job-ev-a', 'worker-ev'),
+          },
+          {
+            jobId: 'job-ev-b',
+            workerId: 'worker-ev',
+            status: 'ACQUIRED',
+            lease: leaseFor('job-ev-b', 'worker-ev'),
+          },
+        ],
+        acquiredCount: 2,
+        conflictCount: 0,
+        notClaimableCount: 0,
+      }),
+      renew: vi.fn(),
+      release: vi.fn(),
+      findActiveByJobId: vi.fn(),
+      findById: vi.fn(),
+      findByWorkerId: vi.fn(),
+      reclaimExpiredLeases: vi.fn(),
+    };
+
+    const scheduler = new ForgeScheduler({
+      workerSource: { listWorkers: vi.fn().mockResolvedValue([evWorker]) },
+      leaseRepository: mockLeaseRepo,
+      eventPublisher: bus,
+    });
+
+    await scheduler.schedulePrioritized([jobA, jobB]);
+
+    const claimed = seen.filter((e) => e.event_type === 'JobClaimed');
+    expect(claimed.map((e) => e.job_id).sort()).toEqual(['job-ev-a', 'job-ev-b']);
+    await bus.close();
+  });
+
+  it('does not emit JobClaimed when no eventPublisher is configured', async () => {
+    const mockLeaseRepo = {
+      claim: vi.fn().mockResolvedValue({
+        status: 'ACQUIRED',
+        lease: leaseFor('job-ev-1', 'worker-ev'),
+        isIdempotent: false,
+      }),
+      renew: vi.fn(),
+      release: vi.fn(),
+      findActiveByJobId: vi.fn(),
+      findById: vi.fn(),
+      findByWorkerId: vi.fn(),
+      reclaimExpiredLeases: vi.fn(),
+    };
+    const scheduler = new ForgeScheduler({
+      workerSource: { listWorkers: vi.fn().mockResolvedValue([evWorker]) },
+      leaseRepository: mockLeaseRepo,
+    });
+    const decision = await scheduler.schedule(evJob());
+    expect(decision.status).toBe('SCHEDULED');
+  });
+
+  it('emits WorkerLost for each reconciled lease and skips NO_OP', async () => {
+    const bus = new InProcessEventBus();
+    const seen: ForgeEvent[] = [];
+    bus.subscribe((e) => void seen.push(e));
+
+    const recoveryService = {
+      recoverExpiredLeases: vi.fn().mockResolvedValue({
+        recoveredCount: 3,
+        details: [
+          {
+            leaseId: 'l1',
+            jobId: 'j1',
+            workerId: 'w1',
+            action: 'REQUEUED',
+            nextAttemptAt: new Date(),
+          },
+          {
+            leaseId: 'l2',
+            jobId: 'j2',
+            workerId: 'w2',
+            action: 'DEAD_LETTERED',
+            deadLetterReason: 'WORKER_LOSS_RETRY_EXHAUSTED',
+          },
+          { leaseId: 'l3', jobId: 'j3', workerId: 'w3', action: 'NO_OP' },
+        ],
+      }),
+    } as unknown as LeaseRecoveryService;
+
+    const scheduler = new ForgeScheduler({ recoveryService, eventPublisher: bus });
+    const result = await scheduler.recoverExpiredLeases();
+    expect(result.recoveredCount).toBe(3);
+
+    const lost = seen.filter((e) => e.event_type === 'WorkerLost');
+    expect(lost).toHaveLength(2);
+    expect(lost.map((e) => e.job_id).sort()).toEqual(['j1', 'j2']);
+    const dl = lost.find((e) => e.job_id === 'j2');
+    expect(dl).toMatchObject({
+      payload: {
+        recovery_action: 'DEAD_LETTERED',
+        dead_letter_reason: 'WORKER_LOSS_RETRY_EXHAUSTED',
+      },
+    });
+    await bus.close();
+  });
+
+  it('publisher failure never breaks placement (best-effort)', async () => {
+    const failingPublisher = {
+      publish: vi.fn().mockRejectedValue(new Error('bus down')),
+    };
+    const logs: string[] = [];
+    const logger = createLogger({
+      service: 'scheduler',
+      environment: 'test',
+      writeFn: (m) => logs.push(m),
+    });
+    const mockLeaseRepo = {
+      claim: vi.fn().mockResolvedValue({
+        status: 'ACQUIRED',
+        lease: leaseFor('job-ev-1', 'worker-ev'),
+        isIdempotent: false,
+      }),
+      renew: vi.fn(),
+      release: vi.fn(),
+      findActiveByJobId: vi.fn(),
+      findById: vi.fn(),
+      findByWorkerId: vi.fn(),
+      reclaimExpiredLeases: vi.fn(),
+    };
+    const scheduler = new ForgeScheduler({
+      workerSource: { listWorkers: vi.fn().mockResolvedValue([evWorker]) },
+      leaseRepository: mockLeaseRepo,
+      eventPublisher: failingPublisher,
+      logger,
+    });
+
+    const decision = await scheduler.schedule(evJob());
+    expect(decision.status).toBe('SCHEDULED');
+    if (decision.status === 'SCHEDULED') {
+      expect(decision.lease?.id).toBe('lease-job-ev-1');
+    }
+    expect(logs.some((l) => l.includes('Event publication failed'))).toBe(true);
   });
 });
