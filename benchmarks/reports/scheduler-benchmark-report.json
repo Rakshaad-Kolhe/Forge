@@ -1,0 +1,2575 @@
+{
+  "environment": {
+    "gitCommit": "58bdcef2bf33dc9c9493105d6715c4d3fe6a673b",
+    "gitBranch": "feat/pr-17-scheduler-benchmarks",
+    "platform": "win32",
+    "arch": "x64",
+    "cpuModel": "Intel(R) Core(TM) i7-14650HX",
+    "cpuCores": 24,
+    "totalMemoryBytes": 16869285888,
+    "freeMemoryBytes": 1576357888,
+    "nodeVersion": "v25.2.1",
+    "postgresVersion": "PostgreSQL 18.6 (Ubuntu 18.6-0ubuntu0.26.04.1)",
+    "redisVersion": "8.0.5",
+    "timestamp": "2026-09-08T08:23:10.005Z"
+  },
+  "configuration": {
+    "seed": 424242,
+    "warmupIterations": 50,
+    "microIterations": 500,
+    "componentIterations": 50,
+    "systemIterations": 20
+  },
+  "suites": {
+    "micro": [
+      {
+        "name": "micro:compareJobPriority",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.38,
+        "stats": {
+          "count": 500,
+          "min": 0.0002,
+          "max": 0.0309,
+          "mean": 0.0005,
+          "median": 0.0004,
+          "p95": 0.0005,
+          "p99": 0.0024,
+          "stdDev": 0.0015,
+          "opsPerSec": 1316482.36
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 765896,
+          "rssDeltaBytes": 16384,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:calculateAgeBonus",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.29,
+        "stats": {
+          "count": 500,
+          "min": 0.0003,
+          "max": 0.0089,
+          "mean": 0.0004,
+          "median": 0.0004,
+          "p95": 0.0004,
+          "p99": 0.0011,
+          "stdDev": 0.0005,
+          "opsPerSec": 1749475.16
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 237944,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:calculateEffectivePriority",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.63,
+        "stats": {
+          "count": 500,
+          "min": 0.0007,
+          "max": 0.0348,
+          "mean": 0.0011,
+          "median": 0.0008,
+          "p95": 0.001,
+          "p99": 0.0089,
+          "stdDev": 0.002,
+          "opsPerSec": 794281.18
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 407608,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsByPriority (N=10)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.52,
+        "stats": {
+          "count": 500,
+          "min": 0.0007,
+          "max": 0.0189,
+          "mean": 0.0009,
+          "median": 0.0007,
+          "p95": 0.0013,
+          "p99": 0.0018,
+          "stdDev": 0.001,
+          "opsPerSec": 954016.41
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 748248,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsWithFairAging (N=10)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 3.24,
+        "stats": {
+          "count": 500,
+          "min": 0.0044,
+          "max": 0.3079,
+          "mean": 0.0063,
+          "median": 0.0049,
+          "p95": 0.0097,
+          "p99": 0.0225,
+          "stdDev": 0.0138,
+          "opsPerSec": 154306.7
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -2056040,
+          "rssDeltaBytes": 585728,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsByPriority (N=50)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 1.98,
+        "stats": {
+          "count": 500,
+          "min": 0.0027,
+          "max": 0.0466,
+          "mean": 0.0038,
+          "median": 0.0036,
+          "p95": 0.0049,
+          "p99": 0.0114,
+          "stdDev": 0.0023,
+          "opsPerSec": 252563.52
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1094328,
+          "rssDeltaBytes": -233472,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 16000
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsWithFairAging (N=50)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 16.91,
+        "stats": {
+          "count": 500,
+          "min": 0.0285,
+          "max": 0.5504,
+          "mean": 0.0337,
+          "median": 0.0295,
+          "p95": 0.0379,
+          "p99": 0.1243,
+          "stdDev": 0.0299,
+          "opsPerSec": 29569.88
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -5329856,
+          "rssDeltaBytes": -724992,
+          "cpuUserMicros": 16000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsByPriority (N=100)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 3.54,
+        "stats": {
+          "count": 500,
+          "min": 0.0065,
+          "max": 0.0401,
+          "mean": 0.007,
+          "median": 0.0068,
+          "p95": 0.0071,
+          "p99": 0.0108,
+          "stdDev": 0.0016,
+          "opsPerSec": 141139.28
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1676496,
+          "rssDeltaBytes": -704512,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsWithFairAging (N=100)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 37.81,
+        "stats": {
+          "count": 500,
+          "min": 0.0693,
+          "max": 0.2648,
+          "mean": 0.0755,
+          "median": 0.0706,
+          "p95": 0.0862,
+          "p99": 0.1662,
+          "stdDev": 0.0187,
+          "opsPerSec": 13222.72
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 3203936,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 31000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsByPriority (N=500)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 31.57,
+        "stats": {
+          "count": 500,
+          "min": 0.0586,
+          "max": 0.5308,
+          "mean": 0.063,
+          "median": 0.0614,
+          "p95": 0.0653,
+          "p99": 0.0837,
+          "stdDev": 0.0212,
+          "opsPerSec": 15838.22
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -230536,
+          "rssDeltaBytes": 69632,
+          "cpuUserMicros": 31000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsWithFairAging (N=500)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 267.71,
+        "stats": {
+          "count": 500,
+          "min": 0.5019,
+          "max": 0.7522,
+          "mean": 0.5351,
+          "median": 0.5157,
+          "p95": 0.639,
+          "p99": 0.7122,
+          "stdDev": 0.0469,
+          "opsPerSec": 1867.7
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -3147656,
+          "rssDeltaBytes": 94208,
+          "cpuUserMicros": 250000,
+          "cpuSystemMicros": 16000
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsByPriority (N=1000)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 84.24,
+        "stats": {
+          "count": 500,
+          "min": 0.1594,
+          "max": 0.9249,
+          "mean": 0.1683,
+          "median": 0.1633,
+          "p95": 0.1826,
+          "p99": 0.2228,
+          "stdDev": 0.0375,
+          "opsPerSec": 5935.23
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -1207744,
+          "rssDeltaBytes": 221184,
+          "cpuUserMicros": 78000,
+          "cpuSystemMicros": 15000
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:orderJobsWithFairAging (N=1000)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 614.65,
+        "stats": {
+          "count": 500,
+          "min": 1.1412,
+          "max": 2.645,
+          "mean": 1.2288,
+          "median": 1.1941,
+          "p95": 1.3941,
+          "p99": 1.5153,
+          "stdDev": 0.104,
+          "opsPerSec": 813.47
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -1484056,
+          "rssDeltaBytes": 16384,
+          "cpuUserMicros": 609000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:simple (workers=1)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.53,
+        "stats": {
+          "count": 500,
+          "min": 0.0006,
+          "max": 0.0203,
+          "mean": 0.0009,
+          "median": 0.0008,
+          "p95": 0.001,
+          "p99": 0.003,
+          "stdDev": 0.0013,
+          "opsPerSec": 936154.28
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 593152,
+          "rssDeltaBytes": 32768,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:heavy (workers=1)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.38,
+        "stats": {
+          "count": 500,
+          "min": 0.0003,
+          "max": 0.0134,
+          "mean": 0.0007,
+          "median": 0.0006,
+          "p95": 0.0007,
+          "p99": 0.004,
+          "stdDev": 0.0009,
+          "opsPerSec": 1302083.33
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 552896,
+          "rssDeltaBytes": 16384,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:gpu (workers=1)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.36,
+        "stats": {
+          "count": 500,
+          "min": 0.0005,
+          "max": 0.0091,
+          "mean": 0.0006,
+          "median": 0.0006,
+          "p95": 0.0006,
+          "p99": 0.0012,
+          "stdDev": 0.0005,
+          "opsPerSec": 1385425.33
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 540264,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:simple (workers=10)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 1.2,
+        "stats": {
+          "count": 500,
+          "min": 0.0016,
+          "max": 0.0179,
+          "mean": 0.0023,
+          "median": 0.0017,
+          "p95": 0.0036,
+          "p99": 0.0078,
+          "stdDev": 0.0013,
+          "opsPerSec": 416909.86
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 2510360,
+          "rssDeltaBytes": 4096,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:heavy (workers=10)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 1.56,
+        "stats": {
+          "count": 500,
+          "min": 0.0017,
+          "max": 0.1594,
+          "mean": 0.003,
+          "median": 0.0019,
+          "p95": 0.0036,
+          "p99": 0.0107,
+          "stdDev": 0.0072,
+          "opsPerSec": 319897.63
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -13582760,
+          "rssDeltaBytes": 77824,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:gpu (workers=10)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.6,
+        "stats": {
+          "count": 500,
+          "min": 0.0008,
+          "max": 0.0174,
+          "mean": 0.0011,
+          "median": 0.001,
+          "p95": 0.0012,
+          "p99": 0.0023,
+          "stdDev": 0.0012,
+          "opsPerSec": 837100.28
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1785160,
+          "rssDeltaBytes": 16384,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:simple (workers=50)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 4.15,
+        "stats": {
+          "count": 500,
+          "min": 0.0061,
+          "max": 0.1295,
+          "mean": 0.0081,
+          "median": 0.0069,
+          "p95": 0.0132,
+          "p99": 0.027,
+          "stdDev": 0.0083,
+          "opsPerSec": 120365.91
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 11428400,
+          "rssDeltaBytes": 1384448,
+          "cpuUserMicros": 62000,
+          "cpuSystemMicros": 16000
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:heavy (workers=50)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 3.8,
+        "stats": {
+          "count": 500,
+          "min": 0.0054,
+          "max": 0.0898,
+          "mean": 0.0075,
+          "median": 0.0069,
+          "p95": 0.0113,
+          "p99": 0.0162,
+          "stdDev": 0.0069,
+          "opsPerSec": 131450.96
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 13856480,
+          "rssDeltaBytes": -1949696,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:gpu (workers=50)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 1.59,
+        "stats": {
+          "count": 500,
+          "min": 0.0022,
+          "max": 0.1906,
+          "mean": 0.0031,
+          "median": 0.0027,
+          "p95": 0.003,
+          "p99": 0.0033,
+          "stdDev": 0.0084,
+          "opsPerSec": 315238.64
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -8735112,
+          "rssDeltaBytes": 8192,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:simple (workers=100)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 5.39,
+        "stats": {
+          "count": 500,
+          "min": 0.009,
+          "max": 0.191,
+          "mean": 0.0107,
+          "median": 0.01,
+          "p95": 0.0115,
+          "p99": 0.0187,
+          "stdDev": 0.0082,
+          "opsPerSec": 92800.53
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 5887192,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 16000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:heavy (workers=100)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 5.87,
+        "stats": {
+          "count": 500,
+          "min": 0.0105,
+          "max": 0.1363,
+          "mean": 0.0117,
+          "median": 0.0113,
+          "p95": 0.0124,
+          "p99": 0.0156,
+          "stdDev": 0.0057,
+          "opsPerSec": 85141.16
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 10647000,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:filterEligibleWorkers:gpu (workers=100)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 2.84,
+        "stats": {
+          "count": 500,
+          "min": 0.0048,
+          "max": 0.1156,
+          "mean": 0.0056,
+          "median": 0.0053,
+          "p95": 0.0058,
+          "p99": 0.0065,
+          "stdDev": 0.005,
+          "opsPerSec": 176360.62
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -987568,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:deterministicWorkerSelection (candidates=1)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.3,
+        "stats": {
+          "count": 500,
+          "min": 0.0002,
+          "max": 0.0231,
+          "mean": 0.0004,
+          "median": 0.0003,
+          "p95": 0.0003,
+          "p99": 0.0005,
+          "stdDev": 0.0012,
+          "opsPerSec": 1689189.19
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 188136,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:deterministicWorkerSelection (candidates=10)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 0.63,
+        "stats": {
+          "count": 500,
+          "min": 0.0007,
+          "max": 0.0145,
+          "mean": 0.0011,
+          "median": 0.0008,
+          "p95": 0.0019,
+          "p99": 0.0024,
+          "stdDev": 0.0009,
+          "opsPerSec": 790638.84
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 287976,
+          "rssDeltaBytes": 53248,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:deterministicWorkerSelection (candidates=50)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 1.53,
+        "stats": {
+          "count": 500,
+          "min": 0.0025,
+          "max": 0.0318,
+          "mean": 0.0029,
+          "median": 0.0028,
+          "p95": 0.0031,
+          "p99": 0.0035,
+          "stdDev": 0.0016,
+          "opsPerSec": 326434.68
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1017792,
+          "rssDeltaBytes": 438272,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "micro:deterministicWorkerSelection (candidates=100)",
+        "warmupIterations": 50,
+        "measuredIterations": 500,
+        "totalDurationMs": 2.52,
+        "stats": {
+          "count": 500,
+          "min": 0.0045,
+          "max": 0.0205,
+          "mean": 0.005,
+          "median": 0.0048,
+          "p95": 0.0053,
+          "p99": 0.0059,
+          "stdDev": 0.0009,
+          "opsPerSec": 198247.49
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1390368,
+          "rssDeltaBytes": 77824,
+          "cpuUserMicros": 16000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 500,
+          "success": 500,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      }
+    ],
+    "component": [
+      {
+        "name": "component:evaluatePlacement (workers=1)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 0.2,
+        "stats": {
+          "count": 50,
+          "min": 0.0025,
+          "max": 0.0085,
+          "mean": 0.0029,
+          "median": 0.0026,
+          "p95": 0.0047,
+          "p99": 0.007,
+          "stdDev": 0.001,
+          "opsPerSec": 253936.01
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -188752,
+          "rssDeltaBytes": 4096,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 0,
+          "failures": 50,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:evaluatePlacement (workers=10)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 1.02,
+        "stats": {
+          "count": 50,
+          "min": 0.0103,
+          "max": 0.2239,
+          "mean": 0.0201,
+          "median": 0.0136,
+          "p95": 0.0482,
+          "p99": 0.144,
+          "stdDev": 0.0307,
+          "opsPerSec": 48995.59
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -15612768,
+          "rssDeltaBytes": 73728,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 0,
+          "failures": 50,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:evaluatePlacement (workers=50)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 1.44,
+        "stats": {
+          "count": 50,
+          "min": 0.0185,
+          "max": 0.0751,
+          "mean": 0.0286,
+          "median": 0.025,
+          "p95": 0.0534,
+          "p99": 0.0694,
+          "stdDev": 0.0114,
+          "opsPerSec": 34647.63
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 3356520,
+          "rssDeltaBytes": 159744,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 0,
+          "failures": 50,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:evaluatePlacement (workers=100)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 1.92,
+        "stats": {
+          "count": 50,
+          "min": 0.0349,
+          "max": 0.0636,
+          "mean": 0.0382,
+          "median": 0.0362,
+          "p95": 0.0492,
+          "p99": 0.0628,
+          "stdDev": 0.0059,
+          "opsPerSec": 26067.46
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 6614192,
+          "rssDeltaBytes": 4096,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 0,
+          "failures": 50,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:HPF (jobs=10)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 0.05,
+        "stats": {
+          "count": 50,
+          "min": 0.0005,
+          "max": 0.0094,
+          "mean": 0.0008,
+          "median": 0.0006,
+          "p95": 0.0008,
+          "p99": 0.0053,
+          "stdDev": 0.0012,
+          "opsPerSec": 1077586.21
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 67840,
+          "rssDeltaBytes": 69632,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:FairAging (jobs=10)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 0.24,
+        "stats": {
+          "count": 50,
+          "min": 0.0035,
+          "max": 0.0414,
+          "mean": 0.0047,
+          "median": 0.0038,
+          "p95": 0.0048,
+          "p99": 0.0237,
+          "stdDev": 0.0053,
+          "opsPerSec": 204498.98
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 553592,
+          "rssDeltaBytes": 364544,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:HPF (jobs=25)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 0.07,
+        "stats": {
+          "count": 50,
+          "min": 0.0012,
+          "max": 0.0015,
+          "mean": 0.0013,
+          "median": 0.0013,
+          "p95": 0.0014,
+          "p99": 0.0015,
+          "stdDev": 0.0001,
+          "opsPerSec": 708215.3
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 79840,
+          "rssDeltaBytes": 90112,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:FairAging (jobs=25)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 1.08,
+        "stats": {
+          "count": 50,
+          "min": 0.0124,
+          "max": 0.3238,
+          "mean": 0.0215,
+          "median": 0.013,
+          "p95": 0.0245,
+          "p99": 0.1947,
+          "stdDev": 0.0438,
+          "opsPerSec": 46168.05
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1904504,
+          "rssDeltaBytes": -692224,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:HPF (jobs=50)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 0.17,
+        "stats": {
+          "count": 50,
+          "min": 0.0029,
+          "max": 0.0055,
+          "mean": 0.0032,
+          "median": 0.0031,
+          "p95": 0.0045,
+          "p99": 0.0052,
+          "stdDev": 0.0005,
+          "opsPerSec": 298329.36
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 99840,
+          "rssDeltaBytes": 94208,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:FairAging (jobs=50)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 1.66,
+        "stats": {
+          "count": 50,
+          "min": 0.0323,
+          "max": 0.0453,
+          "mean": 0.0331,
+          "median": 0.0327,
+          "p95": 0.0334,
+          "p99": 0.0395,
+          "stdDev": 0.0018,
+          "opsPerSec": 30118.67
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 4744168,
+          "rssDeltaBytes": 929792,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:HPF (jobs=100)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 0.34,
+        "stats": {
+          "count": 50,
+          "min": 0.0062,
+          "max": 0.0155,
+          "mean": 0.0067,
+          "median": 0.0065,
+          "p95": 0.007,
+          "p99": 0.0119,
+          "stdDev": 0.0013,
+          "opsPerSec": 145730.11
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 160672,
+          "rssDeltaBytes": 36864,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:FairAging (jobs=100)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 4.31,
+        "stats": {
+          "count": 50,
+          "min": 0.0737,
+          "max": 0.4146,
+          "mean": 0.086,
+          "median": 0.0747,
+          "p95": 0.101,
+          "p99": 0.3177,
+          "stdDev": 0.0512,
+          "opsPerSec": 11605.24
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -5238816,
+          "rssDeltaBytes": -1146880,
+          "cpuUserMicros": 31000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:HPF (jobs=500)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 3.18,
+        "stats": {
+          "count": 50,
+          "min": 0.0611,
+          "max": 0.0719,
+          "mean": 0.0635,
+          "median": 0.0629,
+          "p95": 0.0673,
+          "p99": 0.0699,
+          "stdDev": 0.0021,
+          "opsPerSec": 15713.88
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 639472,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:FairAging (jobs=500)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 27.1,
+        "stats": {
+          "count": 50,
+          "min": 0.4948,
+          "max": 1.1611,
+          "mean": 0.5414,
+          "median": 0.5082,
+          "p95": 0.6396,
+          "p99": 0.9161,
+          "stdDev": 0.0993,
+          "opsPerSec": 1844.87
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -2650120,
+          "rssDeltaBytes": 1474560,
+          "cpuUserMicros": 31000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:HPF (jobs=1000)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 8.65,
+        "stats": {
+          "count": 50,
+          "min": 0.1673,
+          "max": 0.1846,
+          "mean": 0.1728,
+          "median": 0.1714,
+          "p95": 0.1804,
+          "p99": 0.184,
+          "stdDev": 0.0036,
+          "opsPerSec": 5782.35
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1320288,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 16000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:policy:FairAging (jobs=1000)",
+        "warmupIterations": 10,
+        "measuredIterations": 50,
+        "totalDurationMs": 70.06,
+        "stats": {
+          "count": 50,
+          "min": 1.1342,
+          "max": 3.3352,
+          "mean": 1.4006,
+          "median": 1.1586,
+          "p95": 2.3584,
+          "p99": 2.8845,
+          "stdDev": 0.4925,
+          "opsPerSec": 713.64
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 13418096,
+          "rssDeltaBytes": 34050048,
+          "cpuUserMicros": 63000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:db:findSchedulableJobs (table_jobs=50, limit=50)",
+        "warmupIterations": 5,
+        "measuredIterations": 50,
+        "totalDurationMs": 1551.51,
+        "stats": {
+          "count": 50,
+          "min": 19.7406,
+          "max": 53.3498,
+          "mean": 31.0269,
+          "median": 27.4369,
+          "p95": 47.5123,
+          "p99": 52.9063,
+          "stdDev": 10.1112,
+          "opsPerSec": 32.23
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -3603672,
+          "rssDeltaBytes": 634880,
+          "cpuUserMicros": 437000,
+          "cpuSystemMicros": 234000
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:queue:enqueue",
+        "warmupIterations": 5,
+        "measuredIterations": 50,
+        "totalDurationMs": 1.97,
+        "stats": {
+          "count": 50,
+          "min": 0.0325,
+          "max": 0.1017,
+          "mean": 0.0373,
+          "median": 0.0331,
+          "p95": 0.0494,
+          "p99": 0.0904,
+          "stdDev": 0.0118,
+          "opsPerSec": 25333.13
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 113944,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 50,
+          "success": 0,
+          "failures": 50,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": [
+            "jobId must be a non-empty string",
+            "jobId must be a non-empty string",
+            "jobId must be a non-empty string",
+            "jobId must be a non-empty string",
+            "jobId must be a non-empty string"
+          ]
+        }
+      },
+      {
+        "name": "component:queue:dequeue",
+        "warmupIterations": 5,
+        "measuredIterations": 50,
+        "totalDurationMs": 44.22,
+        "stats": {
+          "count": 50,
+          "min": 0.5111,
+          "max": 3.2211,
+          "mean": 0.8822,
+          "median": 0.8067,
+          "p95": 1.1084,
+          "p99": 2.2174,
+          "stdDev": 0.3686,
+          "opsPerSec": 1130.81
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 483232,
+          "rssDeltaBytes": 77824,
+          "cpuUserMicros": 16000,
+          "cpuSystemMicros": 31000
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:lease:claim (uncontended)",
+        "warmupIterations": 5,
+        "measuredIterations": 50,
+        "totalDurationMs": 572.56,
+        "stats": {
+          "count": 50,
+          "min": 7.93,
+          "max": 19.1962,
+          "mean": 11.4456,
+          "median": 11.6268,
+          "p95": 13.9524,
+          "p99": 17.6938,
+          "stdDev": 2.0591,
+          "opsPerSec": 87.33
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 2813696,
+          "rssDeltaBytes": 659456,
+          "cpuUserMicros": 78000,
+          "cpuSystemMicros": 31000
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "component:lease:claim (contended conflict)",
+        "warmupIterations": 5,
+        "measuredIterations": 50,
+        "totalDurationMs": 278.18,
+        "stats": {
+          "count": 50,
+          "min": 4.2736,
+          "max": 8.2235,
+          "mean": 5.5592,
+          "median": 5.4207,
+          "p95": 6.9342,
+          "p99": 8.212,
+          "stdDev": 0.8432,
+          "opsPerSec": 179.74
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1656488,
+          "rssDeltaBytes": 143360,
+          "cpuUserMicros": 63000,
+          "cpuSystemMicros": 62000
+        },
+        "failures": {
+          "total": 50,
+          "success": 50,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      }
+    ],
+    "system": [
+      {
+        "name": "system:batch:HPF (jobs=10, workers=1)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 0.49,
+        "stats": {
+          "count": 20,
+          "min": 0.0221,
+          "max": 0.033,
+          "mean": 0.024,
+          "median": 0.0227,
+          "p95": 0.0301,
+          "p99": 0.0324,
+          "stdDev": 0.0028,
+          "opsPerSec": 40404.04
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 268512,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=10, workers=1)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 0.71,
+        "stats": {
+          "count": 20,
+          "min": 0.0317,
+          "max": 0.0413,
+          "mean": 0.0335,
+          "median": 0.0323,
+          "p95": 0.0372,
+          "p99": 0.0405,
+          "stdDev": 0.0025,
+          "opsPerSec": 28153.15
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 411904,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=10, workers=10)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 2.35,
+        "stats": {
+          "count": 20,
+          "min": 0.0549,
+          "max": 0.6367,
+          "mean": 0.1165,
+          "median": 0.0702,
+          "p95": 0.4226,
+          "p99": 0.5939,
+          "stdDev": 0.1411,
+          "opsPerSec": 8506.29
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1001336,
+          "rssDeltaBytes": 196608,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=10, workers=10)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 1.33,
+        "stats": {
+          "count": 20,
+          "min": 0.063,
+          "max": 0.0936,
+          "mean": 0.0659,
+          "median": 0.0638,
+          "p95": 0.0686,
+          "p99": 0.0886,
+          "stdDev": 0.0065,
+          "opsPerSec": 15025.17
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1120184,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=10, workers=50)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 5.28,
+        "stats": {
+          "count": 20,
+          "min": 0.2149,
+          "max": 0.8358,
+          "mean": 0.2627,
+          "median": 0.2195,
+          "p95": 0.3674,
+          "p99": 0.7421,
+          "stdDev": 0.1353,
+          "opsPerSec": 3791.11
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 3824816,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 16000
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=10, workers=50)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 7.3,
+        "stats": {
+          "count": 20,
+          "min": 0.2163,
+          "max": 1.2809,
+          "mean": 0.3633,
+          "median": 0.2337,
+          "p95": 1.2209,
+          "p99": 1.2689,
+          "stdDev": 0.303,
+          "opsPerSec": 2740.78
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 3976416,
+          "rssDeltaBytes": 4096,
+          "cpuUserMicros": 31000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=25, workers=1)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 0.51,
+        "stats": {
+          "count": 20,
+          "min": 0.0238,
+          "max": 0.0277,
+          "mean": 0.0246,
+          "median": 0.0241,
+          "p95": 0.0261,
+          "p99": 0.0274,
+          "stdDev": 0.0009,
+          "opsPerSec": 39549.14
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 621808,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=25, workers=1)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 1.16,
+        "stats": {
+          "count": 20,
+          "min": 0.0555,
+          "max": 0.0601,
+          "mean": 0.0572,
+          "median": 0.0569,
+          "p95": 0.0591,
+          "p99": 0.0599,
+          "stdDev": 0.0013,
+          "opsPerSec": 17299.54
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1174168,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=25, workers=10)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 2.33,
+        "stats": {
+          "count": 20,
+          "min": 0.1126,
+          "max": 0.1345,
+          "mean": 0.116,
+          "median": 0.1139,
+          "p95": 0.1333,
+          "p99": 0.1343,
+          "stdDev": 0.0061,
+          "opsPerSec": 8572.65
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 2402272,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=25, workers=10)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 3,
+        "stats": {
+          "count": 20,
+          "min": 0.1448,
+          "max": 0.1677,
+          "mean": 0.1493,
+          "median": 0.1476,
+          "p95": 0.1616,
+          "p99": 0.1665,
+          "stdDev": 0.0054,
+          "opsPerSec": 6669.33
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 2954232,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=25, workers=50)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 9.95,
+        "stats": {
+          "count": 20,
+          "min": 0.4805,
+          "max": 0.5205,
+          "mean": 0.4963,
+          "median": 0.4934,
+          "p95": 0.5186,
+          "p99": 0.5201,
+          "stdDev": 0.0116,
+          "opsPerSec": 2010.43
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 9515808,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=25, workers=50)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 12.25,
+        "stats": {
+          "count": 20,
+          "min": 0.5064,
+          "max": 1.0525,
+          "mean": 0.6106,
+          "median": 0.5292,
+          "p95": 0.9336,
+          "p99": 1.0287,
+          "stdDev": 0.1603,
+          "opsPerSec": 1632.17
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 10068504,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 16000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=50, workers=1)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 2.26,
+        "stats": {
+          "count": 20,
+          "min": 0.0506,
+          "max": 1.0441,
+          "mean": 0.1117,
+          "median": 0.0525,
+          "p95": 0.2577,
+          "p99": 0.8868,
+          "stdDev": 0.2169,
+          "opsPerSec": 8864.46
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1220576,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=50, workers=1)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 2.69,
+        "stats": {
+          "count": 20,
+          "min": 0.1295,
+          "max": 0.1547,
+          "mean": 0.1338,
+          "median": 0.1329,
+          "p95": 0.1365,
+          "p99": 0.1511,
+          "stdDev": 0.0051,
+          "opsPerSec": 7437.71
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 2611952,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 16000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=50, workers=10)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 7.13,
+        "stats": {
+          "count": 20,
+          "min": 0.2191,
+          "max": 2.3835,
+          "mean": 0.3549,
+          "median": 0.2343,
+          "p95": 0.484,
+          "p99": 2.0036,
+          "stdDev": 0.4672,
+          "opsPerSec": 2806.07
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -27536168,
+          "rssDeltaBytes": 28672,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=50, workers=10)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 5.85,
+        "stats": {
+          "count": 20,
+          "min": 0.1862,
+          "max": 0.3736,
+          "mean": 0.2914,
+          "median": 0.2996,
+          "p95": 0.3489,
+          "p99": 0.3687,
+          "stdDev": 0.0437,
+          "opsPerSec": 3420.5
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 6173184,
+          "rssDeltaBytes": 12288,
+          "cpuUserMicros": 15000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=50, workers=50)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 22.5,
+        "stats": {
+          "count": 20,
+          "min": 1.0211,
+          "max": 1.8033,
+          "mean": 1.1228,
+          "median": 1.0575,
+          "p95": 1.3957,
+          "p99": 1.7218,
+          "stdDev": 0.176,
+          "opsPerSec": 888.88
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -14338808,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 16000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=50, workers=50)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 20.76,
+        "stats": {
+          "count": 20,
+          "min": 1.0186,
+          "max": 1.0639,
+          "mean": 1.0368,
+          "median": 1.0343,
+          "p95": 1.0631,
+          "p99": 1.0637,
+          "stdDev": 0.0121,
+          "opsPerSec": 963.6
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 20401120,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 15000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=100, workers=1)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 2.15,
+        "stats": {
+          "count": 20,
+          "min": 0.0982,
+          "max": 0.1871,
+          "mean": 0.1071,
+          "median": 0.1015,
+          "p95": 0.1218,
+          "p99": 0.174,
+          "stdDev": 0.019,
+          "opsPerSec": 9282.03
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 2418912,
+          "rssDeltaBytes": 307200,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=100, workers=1)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 6.99,
+        "stats": {
+          "count": 20,
+          "min": 0.2821,
+          "max": 1.1533,
+          "mean": 0.3483,
+          "median": 0.2921,
+          "p95": 0.4767,
+          "p99": 1.018,
+          "stdDev": 0.188,
+          "opsPerSec": 2862.87
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -27354976,
+          "rssDeltaBytes": 827392,
+          "cpuUserMicros": 31000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=100, workers=10)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 10.34,
+        "stats": {
+          "count": 20,
+          "min": 0.4518,
+          "max": 0.6929,
+          "mean": 0.5152,
+          "median": 0.4905,
+          "p95": 0.6291,
+          "p99": 0.6801,
+          "stdDev": 0.0684,
+          "opsPerSec": 1935.02
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 9552840,
+          "rssDeltaBytes": -118784,
+          "cpuUserMicros": 32000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=100, workers=10)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 10.9,
+        "stats": {
+          "count": 20,
+          "min": 0.4017,
+          "max": 1.2315,
+          "mean": 0.5432,
+          "median": 0.4749,
+          "p95": 1.0673,
+          "p99": 1.1987,
+          "stdDev": 0.221,
+          "opsPerSec": 1835.43
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 12972704,
+          "rssDeltaBytes": -2002944,
+          "cpuUserMicros": 31000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:HPF (jobs=100, workers=50)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 34.73,
+        "stats": {
+          "count": 20,
+          "min": 1.0811,
+          "max": 2.8698,
+          "mean": 1.7346,
+          "median": 1.7978,
+          "p95": 1.9439,
+          "p99": 2.6846,
+          "stdDev": 0.3726,
+          "opsPerSec": 575.81
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 4814520,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 31000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:batch:FairAging (jobs=100, workers=50)",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 40.91,
+        "stats": {
+          "count": 20,
+          "min": 1.9502,
+          "max": 2.7858,
+          "mean": 2.0436,
+          "median": 2.0028,
+          "p95": 2.1522,
+          "p99": 2.6591,
+          "stdDev": 0.1751,
+          "opsPerSec": 488.85
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 7907672,
+          "rssDeltaBytes": 69632,
+          "cpuUserMicros": 47000,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:persistent:schedulePrioritized (batch=10, workers=10)",
+        "warmupIterations": 2,
+        "measuredIterations": 10,
+        "totalDurationMs": 1395.39,
+        "stats": {
+          "count": 10,
+          "min": 73.4859,
+          "max": 127.7222,
+          "mean": 86.4386,
+          "median": 79.503,
+          "p95": 115.6847,
+          "p99": 125.3147,
+          "stdDev": 16.3274,
+          "opsPerSec": 7.17
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 10982168,
+          "rssDeltaBytes": 1318912,
+          "cpuUserMicros": 203000,
+          "cpuSystemMicros": 93000
+        },
+        "failures": {
+          "total": 10,
+          "success": 10,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:persistent:schedulePrioritized (batch=25, workers=10)",
+        "warmupIterations": 2,
+        "measuredIterations": 10,
+        "totalDurationMs": 3654.04,
+        "stats": {
+          "count": 10,
+          "min": 191.15,
+          "max": 285.0115,
+          "mean": 232.2965,
+          "median": 229.1031,
+          "p95": 270.5976,
+          "p99": 282.1287,
+          "stdDev": 24.6203,
+          "opsPerSec": 2.74
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 1335552,
+          "rssDeltaBytes": -3334144,
+          "cpuUserMicros": 579000,
+          "cpuSystemMicros": 344000
+        },
+        "failures": {
+          "total": 10,
+          "success": 10,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:persistent:schedulePrioritized (batch=50, workers=10)",
+        "warmupIterations": 2,
+        "measuredIterations": 10,
+        "totalDurationMs": 7278.73,
+        "stats": {
+          "count": 10,
+          "min": 411.807,
+          "max": 507.9191,
+          "mean": 463.652,
+          "median": 461.9391,
+          "p95": 507.7918,
+          "p99": 507.8936,
+          "stdDev": 29.4116,
+          "opsPerSec": 1.37
+        },
+        "resources": {
+          "heapUsedDeltaBytes": -6424680,
+          "rssDeltaBytes": 761856,
+          "cpuUserMicros": 1016000,
+          "cpuSystemMicros": 640000
+        },
+        "failures": {
+          "total": 10,
+          "success": 10,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:boundary:zeroWorkers",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 0.2,
+        "stats": {
+          "count": 20,
+          "min": 0.0072,
+          "max": 0.0244,
+          "mean": 0.0094,
+          "median": 0.0075,
+          "p95": 0.0183,
+          "p99": 0.0232,
+          "stdDev": 0.0043,
+          "opsPerSec": 98716.68
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 38728,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:boundary:incompatibleRequirements",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 0.26,
+        "stats": {
+          "count": 20,
+          "min": 0.0112,
+          "max": 0.0226,
+          "mean": 0.0126,
+          "median": 0.0116,
+          "p95": 0.0171,
+          "p99": 0.0215,
+          "stdDev": 0.0027,
+          "opsPerSec": 75700.23
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 106576,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      },
+      {
+        "name": "system:boundary:activeBackoff",
+        "warmupIterations": 5,
+        "measuredIterations": 20,
+        "totalDurationMs": 0.21,
+        "stats": {
+          "count": 20,
+          "min": 0.0087,
+          "max": 0.0161,
+          "mean": 0.0099,
+          "median": 0.0089,
+          "p95": 0.0151,
+          "p99": 0.0159,
+          "stdDev": 0.0021,
+          "opsPerSec": 95328.88
+        },
+        "resources": {
+          "heapUsedDeltaBytes": 29936,
+          "rssDeltaBytes": 0,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 0
+        },
+        "failures": {
+          "total": 20,
+          "success": 20,
+          "failures": 0,
+          "conflicts": 0,
+          "timeouts": 0,
+          "errors": []
+        }
+      }
+    ],
+    "explain": [
+      {
+        "queryName": "PgJobRepository.findSchedulableJobs",
+        "sql": "EXPLAIN (ANALYZE, BUFFERS)\n      SELECT id, pipeline_run_id, step_name, command, depends_on, requirements, priority, retry_policy, next_attempt_at, status, created_at\n      FROM jobs\n      WHERE status = 'QUEUED'\n        AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())\n      ORDER BY priority DESC, created_at ASC\n      LIMIT 50;",
+        "plan": [
+          "Limit  (cost=0.48..8.29 rows=50 width=123) (actual time=0.423..0.425 rows=0.00 loops=1)",
+          "  Buffers: shared hit=102",
+          "  ->  Incremental Sort  (cost=0.48..40.32 rows=255 width=123) (actual time=0.422..0.422 rows=0.00 loops=1)",
+          "        Sort Key: priority DESC, created_at",
+          "        Presorted Key: priority",
+          "        Full-sort Groups: 1  Sort Method: quicksort  Average Memory: 25kB  Peak Memory: 25kB",
+          "        Buffers: shared hit=102",
+          "        ->  Index Scan using idx_jobs_priority on jobs  (cost=0.14..33.40 rows=255 width=123) (actual time=0.261..0.261 rows=0.00 loops=1)",
+          "              Filter: (((status)::text = 'QUEUED'::text) AND ((next_attempt_at IS NULL) OR (next_attempt_at <= now())))",
+          "              Index Searches: 1",
+          "              Buffers: shared hit=93",
+          "Planning:",
+          "  Buffers: shared hit=215",
+          "Planning Time: 3.481 ms",
+          "Execution Time: 1.145 ms"
+        ],
+        "planningTimeMs": 3.481,
+        "executionTimeMs": 1.145
+      },
+      {
+        "queryName": "PgWorkerLeaseRepository.claim (active check)",
+        "sql": "EXPLAIN (ANALYZE, BUFFERS)\n      SELECT id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at,\n             (expires_at <= NOW()) AS is_expired\n      FROM worker_leases\n      WHERE job_id = '00000000-0000-0000-0000-000000000000' AND status = 'ACTIVE';",
+        "plan": [
+          "Index Scan using idx_worker_leases_status on worker_leases  (cost=0.14..8.17 rows=1 width=1703) (actual time=0.016..0.016 rows=0.00 loops=1)",
+          "  Index Cond: ((status)::text = 'ACTIVE'::text)",
+          "  Filter: ((job_id)::text = '00000000-0000-0000-0000-000000000000'::text)",
+          "  Index Searches: 1",
+          "  Buffers: shared hit=3",
+          "Planning:",
+          "  Buffers: shared hit=103",
+          "Planning Time: 0.290 ms",
+          "Execution Time: 0.032 ms"
+        ],
+        "planningTimeMs": 0.29,
+        "executionTimeMs": 0.032
+      },
+      {
+        "queryName": "PgWorkerLeaseRepository.claim (job lock)",
+        "sql": "EXPLAIN (ANALYZE, BUFFERS)\n      SELECT id, status FROM jobs WHERE id = '00000000-0000-0000-0000-000000000000' FOR UPDATE;",
+        "plan": [
+          "LockRows  (cost=0.00..8.20 rows=1 width=32) (actual time=0.013..0.013 rows=0.00 loops=1)",
+          "  Buffers: shared hit=5",
+          "  ->  Seq Scan on jobs  (cost=0.00..8.19 rows=1 width=32) (actual time=0.012..0.012 rows=0.00 loops=1)",
+          "        Filter: ((id)::text = '00000000-0000-0000-0000-000000000000'::text)",
+          "        Buffers: shared hit=5",
+          "Planning Time: 0.059 ms",
+          "Execution Time: 0.034 ms"
+        ],
+        "planningTimeMs": 0.059,
+        "executionTimeMs": 0.034
+      }
+    ]
+  },
+  "generatedAt": "2026-09-08T08:23:29.399Z"
+}

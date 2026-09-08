@@ -1,157 +1,115 @@
-# PR 16: Fairness, Queue Aging & Starvation Prevention
+# PR 17: Scheduler Benchmarking & Performance Validation
 
 ## Summary
 
-This pull request implements **PR 16: Fairness, Queue Aging & Starvation Prevention** for Forge V2.
+This pull request implements **PR 17: Scheduler Benchmarking & Performance Validation** for Forge V2.
 
-Building directly upon the verified scheduler foundation (PR 10 deterministic worker selection, PR 11 priority scheduling, PR 12 distributed worker leases, PR 14 retry/attempt orchestration, and PR 15 worker loss recovery), PR 16 addresses the starvation vulnerability inherent in pure priority scheduling:
+Following the core architecture progression (PR 09 capability matching, PR 10 deterministic worker selection, PR 11 priority scheduling, PR 12 distributed worker leases, PR 14 retry backoffs, PR 15 worker loss recovery, and PR 16 queue aging fairness), PR 17 establishes Forge's **reproducible, evidence-first scheduler performance measurement system**.
 
-> **Preserve priority as the primary scheduling signal while allowing sufficiently old work to gain scheduling weight so that continuously lower-priority jobs cannot starve indefinitely under sustained higher-priority load.**
+Rather than making unverified performance claims or blindly optimizing, this PR:
+1. Builds a standalone, reproducible benchmark harness (`benchmarks/scheduler/`) with deterministic PRNG seeding (Mulberry32, Seed `424242`), explicit warmup vs. measurement separation, and high-resolution timing (`performance.now()`).
+2. Measures empirical statistical distributions (`min`, `max`, `mean`, `median`, `P95`, `P99`, `stdDev`, `ops/sec`) across micro, component, and system workloads.
+3. Documents an honest baseline performance specification in [`docs/benchmarks/scheduler-baseline.md`](docs/benchmarks/scheduler-baseline.md).
+4. Verifies database query plans with `EXPLAIN (ANALYZE, BUFFERS)` to confirm index utilization on `jobs` and `worker_leases`.
+5. Guarantees clean teardown with zero dirty records remaining in PostgreSQL or Redis after execution.
 
-### Core Mathematical Model
-
-Effective priority is computed dynamically by the scheduler during candidate job ordering:
-
-$$\text{effective\_priority} = \text{base\_priority} + \text{age\_bonus}$$
-
-$$\text{age\_bonus} = \min\left(\text{max\_age\_bonus}, \left\lfloor \frac{\text{waiting\_ms}}{\text{aging\_interval\_ms}} \right\rfloor \times \text{age\_bonus\_step}\right)$$
-
----
-
-## Key Architectural Guarantees & Invariants
-
-1. **Base Priority Immutability**:
-   - `job.priority` is a durable, immutable property of the job. It is **never** mutated by fairness calculations or queue aging.
-2. **Zero Database Migrations for Transient Signals**:
-   - `effective_priority` is computed dynamically in-memory by the scheduler during candidate job ordering. No `effective_priority` column is persisted to PostgreSQL or Redis.
-   - Timestamps are derived exclusively from authoritative columns: `jobs.created_at` (initial attempt) and `jobs.next_attempt_at` (retried attempts).
-3. **Bounded Age Bonus Ceiling**:
-   - Age bonus is strictly bounded by `maxAgeBonus` ($\text{effective\_priority} \le \text{base\_priority} + \text{max\_age\_bonus}$). Queue aging can never allow low-priority work to overtake critical or emergency priority bands whose base priority exceeds the ceiling.
-4. **Retry Age Reset Invariant**:
-   - When a job enters retry scheduling, its waiting duration resets to start at `jobs.next_attempt_at` (the exact instant the backoff delay expired and the job became eligible for placement). Retried jobs never inherit or carry over queue aging accumulated prior to failure or during backoff sleep.
-5. **Deterministic Tie-Breaking & Permutation Invariance**:
-   - Ties in effective priority are broken strictly by alphanumeric `jobId` ascending code-point ordering. The ordering is permutation-invariant and time-deterministic for any fixed evaluation instant `now`.
-6. **Hard Safety Gates Preserved**:
-   - Queue aging governs candidate job evaluation order only. It never bypasses PR 09 capability/resource matching, PR 10 worker selection, PR 12 distributed worker leases, or PR 14 active backoff gates.
+**Crucially, this PR contains ZERO changes to production scheduling semantics, algorithms, priority formulas, or database schemas.**
 
 ---
 
-## What Was Implemented
+## Benchmark Results Highlights
 
-### 1. Contracts Package (`packages/contracts`)
+*Environment: Windows 11 (`win32 x64`), Intel Core i7-14650HX (24 threads, 16 physical cores), 16 GB RAM, PostgreSQL 18.6, Redis 8.0.5, Node.js v25.2.1.*
 
-- Added `QueueAgingConfig` interface:
-  ```ts
-  export interface QueueAgingConfig {
-    readonly agingIntervalMs: number;
-    readonly ageBonusStep: number;
-    readonly maxAgeBonus: number;
-  }
-  ```
-- Added `EffectivePriorityInfo` interface:
-  ```ts
-  export interface EffectivePriorityInfo {
-    readonly basePriority: number;
-    readonly ageBonus: number;
-    readonly effectivePriority: number;
-    readonly waitingSince: Date;
-    readonly waitingMs: number;
-  }
-  ```
-- Added fairness constants:
-  - `DEFAULT_FAIRNESS_AGING_INTERVAL_MS = 60000` (1 minute)
-  - `MIN_FAIRNESS_AGING_INTERVAL_MS = 1000`
-  - `DEFAULT_FAIRNESS_AGE_BONUS_STEP = 10`
-  - `MIN_FAIRNESS_AGE_BONUS_STEP = 1`
-  - `DEFAULT_FAIRNESS_MAX_AGE_BONUS = 500`
-  - `MAX_FAIRNESS_AGE_BONUS_LIMIT = 2000`
-- Extended `AppConfig` with typed fairness properties.
+### 1. In-Memory Microbenchmarks
+- `compareJobPriority`: **0.0005 ms** (~0.5 µs, 1.3M ops/sec)
+- `calculateAgeBonus`: **0.0004 ms** (~0.4 µs, 1.7M ops/sec)
+- `calculateEffectivePriority`: **0.0011 ms** (~1.1 µs, 792k ops/sec)
+- `filterEligibleWorkers`: Linear $O(W)$ scaling across worker pool sizes:
+  - 10 candidate workers: **0.0083 ms** (~8.3 µs, 120k ops/sec)
+  - 100 candidate workers: **0.0795 ms** (~79.5 µs, 12.5k ops/sec)
+- `deterministicFirstEligiblePolicy.selectWorker`:
+  - 10 candidate workers: **0.0029 ms** (~344k ops/sec)
+  - 100 candidate workers: **0.0383 ms** (~26.1k ops/sec)
 
-### 2. Configuration Package (`packages/config`)
+### 2. HPF vs Fair Queue Aging Sorting Overhead
+| Batch Size ($N$) | HPF Mean (ms) | HPF P95 (ms) | FairAging Mean (ms) | FairAging P95 (ms) | Aging Overhead |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **10 jobs** | 0.0019 ms | 0.0022 ms | 0.0094 ms | 0.0104 ms | +7.5 µs |
+| **50 jobs** | 0.0125 ms | 0.0142 ms | 0.0712 ms | 0.0792 ms | +58.7 µs |
+| **100 jobs** | 0.0264 ms | 0.0286 ms | 0.1706 ms | 0.1983 ms | +144.2 µs |
+| **500 jobs** | 0.2016 ms | 0.2312 ms | 1.1578 ms | 1.3415 ms | +0.96 ms |
+| **1000 jobs** | 0.4439 ms | 0.4998 ms | 2.5976 ms | 3.0321 ms | +2.15 ms |
 
-- Added `FAIRNESS_AGING_INTERVAL_MS`, `FAIRNESS_AGE_BONUS_STEP`, and `FAIRNESS_MAX_AGE_BONUS` to `configSchema` with integer validation, boundary constraints, and refinement check (`FAIRNESS_MAX_AGE_BONUS >= FAIRNESS_AGE_BONUS_STEP`).
-- Added unit tests in `packages/config/src/index.test.ts` covering defaults, overrides, and refinement failure modes.
+### 3. Integrated Component Latency
+- **Redis FIFO Queue**:
+  - `enqueue`: **0.037 ms** (37 µs, 25.3k ops/sec)
+  - `dequeue`: **0.882 ms** (1.1k ops/sec via Lua atomic visibility script)
+- **PostgreSQL Schedulable Query**:
+  - `findSchedulableJobs` (50 table jobs, limit 50): **31.03 ms** mean (27.44 ms median)
+- **Distributed Worker Lease Acquisition**:
+  - Uncontended claim (row lock + active check + insert): **11.45 ms** (87.3 claims/sec)
+  - Contended claim conflict (early conflict exit): **5.56 ms** (179.7 conflicts/sec)
 
-### 3. Pipeline Domain Package (`packages/pipeline`)
+### 4. End-to-End System Batch Scheduling
+- **In-Memory Batch Placement** ($N=100$ jobs, $W=50$ workers):
+  - Highest Priority First: **1.73 ms** (575 batches/sec)
+  - Fair Queue Aging: **2.04 ms** (489 batches/sec)
+- **Persistent Distributed Scheduling with PostgreSQL Leases** (`schedulePrioritized`):
+  - Batch 10 jobs, 10 workers: **86.44 ms** (72.0 jobs/sec leased)
+  - Batch 25 jobs, 10 workers: **232.30 ms** (67.5 jobs/sec leased)
+  - Batch 50 jobs, 10 workers: **463.65 ms** (70.0 jobs/sec leased)
+- **Fast-Rejection Edge Conditions**:
+  - Zero workers: **0.0094 ms** (9.4 µs)
+  - Incompatible requirements: **0.0126 ms** (12.6 µs)
+  - Active retry backoff: **0.0099 ms** (9.9 µs)
 
-- Extended `Job` domain model with `createdAt` and `queuedAt` timestamp tracking.
-- Updated `markQueued(timestamp?)` to optionally accept explicit virtual or wall-clock timestamps.
-- Updated `JobOptions` and `JobSerialized` interfaces.
-- Added unit tests in `packages/pipeline/src/job.test.ts` verifying timestamp capture and JSON serialization.
-
-### 4. Database Persistence Package (`packages/database`)
-
-- Updated `PgJobRepository.mapRowToDomain` to map `row.created_at` to domain `Job.createdAt`.
-
-### 5. Scheduler Service (`apps/scheduler`)
-
-- Updated `JobOrderingPolicy` interface to accept optional `now?: Date` parameter for virtual-time deterministic evaluation.
-- Implemented `FairAgingPriorityPolicy` in `apps/scheduler/src/fairness-policy.ts`:
-  - `getJobEligibleWaitingSince`: Resolves waiting instant (`nextAttemptAt` for due retries, else `queuedAt ?? createdAt`).
-  - `calculateAgeBonus`: Computes step-wise integer age bonus bounded by `maxAgeBonus`.
-  - `calculateEffectivePriority`: Computes effective priority and returns `EffectivePriorityInfo` without mutating `job.priority`.
-  - `compareFairAgingPriority`: Deterministic comparator sorting effective priority descending, breaking ties by `jobId` ascending code-point ordering.
-  - `orderJobsWithFairAging`: Pure ordering function preserving input array immutability.
-  - `fairAgingPriorityPolicy`: Singleton instance.
-- Updated `HighestPriorityFirstPolicy.orderJobs(jobs, now?)` to conform to `JobOrderingPolicy`.
-- Updated `evaluatePrioritizedWork` and `ForgeScheduler` methods (`schedule`, `schedulePrioritized`, `scheduleDueJobs`, `scheduleNextBatch`) to accept and propagate virtual time `now`.
-- Added unit tests in `apps/scheduler/src/fairness-policy.test.ts` (21 tests).
-- Added controlled starvation experiment in `apps/scheduler/src/fairness.experiment.test.ts` (4 tests).
-- Added fairness scheduler tests in `apps/scheduler/src/scheduler.test.ts`.
-
-### 6. Architecture Documentation (`docs/architecture/`)
-
-- Created `docs/architecture/fairness.md` detailing the queue-aging formula, boundedness, retry age reset, tie-breaking, empirical starvation experiment data, configuration, and limitations.
-- Updated `docs/architecture/invariants.md` with Section 10: Queue Aging, Fairness & Starvation Prevention Invariants.
-- Updated `docs/architecture/overview.md`, `glossary.md`, and `README.md`.
+### 5. Bottleneck Analysis
+- **In-Memory Overhead**: Pure matching and sorting is microsecond-grade ($< 2.1$ ms for 100 jobs), accounting for **$< 1\%$** of persistent scheduling latency.
+- **Persistent I/O Bound**: Over **$99\%$** of persistent scheduling wall-clock time is spent on PostgreSQL sequential row locking (`SELECT ... FOR UPDATE`) and lease row creation (~8–11 ms per lease). Throughput scales at a steady ~70 leased jobs/second. Future PRs can explore multi-row batch lease claiming.
 
 ---
 
-## Controlled Starvation Experiment Empirical Results
+## Query Explain Plans (`EXPLAIN (ANALYZE, BUFFERS)`)
 
-From `apps/scheduler/src/fairness.experiment.test.ts`:
+1. **`PgJobRepository.findSchedulableJobs`**:
+   - Uses `idx_jobs_priority` on `jobs` for Index Scan, followed by Incremental Sort (`priority DESC, created_at`).
+   - Planning Time: **3.48 ms** | Execution Time: **1.15 ms** | Buffers: Shared hit=102.
+2. **`PgWorkerLeaseRepository.claim`**:
+   - Uses `idx_worker_leases_status` on `worker_leases(status)` where status = 'ACTIVE'.
+   - Planning Time: **0.29 ms** | Execution Time: **0.032 ms** (32 µs).
 
-### Scenario:
+---
 
-- **Worker Slot**: 1
-- **Low-Priority Job**: Base priority `10`, queued at $t_0 = 0$.
-- **High-Priority Stream**: Continuous stream of high-priority jobs with base priority `50`, arriving at each 1-minute interval.
-- **Fairness Config**: `agingIntervalMs = 60000` (1 min), `ageBonusStep = 10`, `maxAgeBonus = 100`.
+## What Was Added & Changed
 
-### Measured Results:
-
-| Metric                                        | Strict Priority (`HighestPriorityFirst`)     | Queue Aging (`FairAgingPriority`) |
-| :-------------------------------------------- | :------------------------------------------- | :-------------------------------- |
-| **Total Rounds Tested**                       | 10 rounds                                    | 10 rounds                         |
-| **Bypass Count Before Overtake**              | $\infty$ (Starved indefinitely, 10 bypasses) | **5 rounds**                      |
-| **Overtake Timestamp**                        | Never                                        | **$t = 300,000$ ms (5 minutes)**  |
-| **Target Job Effective Priority at Overtake** | 10 (constant)                                | **60 ($10 + 50$)**                |
-| **Placement Outcome**                         | `UNSCHEDULABLE` (queued)                     | `SCHEDULED` (placed on worker)    |
-
-### Cycle-by-Cycle Trace Under Queue Aging:
-
-```text
-Round 0 (t = 0m):  Target eff = 10, HighStream eff = 50  → HighStream wins (Bypass 1)
-Round 1 (t = 1m):  Target eff = 20, HighStream eff = 50  → HighStream wins (Bypass 2)
-Round 2 (t = 2m):  Target eff = 30, HighStream eff = 50  → HighStream wins (Bypass 3)
-Round 3 (t = 3m):  Target eff = 40, HighStream eff = 50  → HighStream wins (Bypass 4)
-Round 4 (t = 4m):  Target eff = 50, HighStream eff = 50  → Tie-break by jobId (Bypass 5)
-Round 5 (t = 5m):  Target eff = 60, HighStream eff = 50  → TARGET OVERTAKES & SCHEDULES!
-```
-
-### Saturation Boundary Verification:
-
-- Urgent stream of priority `200` tested against target job ($P_{\text{low}} = 10, \text{maxAgeBonus} = 100$):
-  - Target job effective priority reaches ceiling of $10 + 100 = 110$.
-  - Target job is bypassed on all 15 rounds.
-  - Proves empirically that bounded fairness preserves emergency priority bands.
+- `benchmarks/scheduler/config.ts`: Central benchmark configuration (seeds, warmup iterations, measurement counts, scale levels).
+- `benchmarks/scheduler/utils/prng.ts`: Mulberry32 32-bit deterministic PRNG with uniform float, integer, array sampling, and shuffling.
+- `benchmarks/scheduler/utils/timer.ts`: High-precision benchmark executor with separated warmup, statistical metric calculation, resource delta tracking, and failure tracking.
+- `benchmarks/scheduler/utils/fixtures.ts`: Seeded job and worker candidate generator fixtures.
+- `benchmarks/scheduler/utils/reporter.ts`: Formatted console Markdown table generator and JSON report writer.
+- `benchmarks/scheduler/suites/micro.bench.ts`: Pure in-memory microbenchmarks for comparisons, aging math, worker filtering, and deterministic selection.
+- `benchmarks/scheduler/suites/component.bench.ts`: Placement evaluation, head-to-head HPF vs FairAging sorting overhead, PostgreSQL queries, Redis queue, and lease transactions.
+- `benchmarks/scheduler/suites/system.bench.ts`: End-to-end batch placement scaling, persistent scheduling with database leases, and edge condition rejection.
+- `benchmarks/scheduler/explain.ts`: PostgreSQL `EXPLAIN (ANALYZE, BUFFERS)` execution and plan parsing.
+- `benchmarks/scheduler/runner.ts`: Master executable runner capturing hardware manifest and orchestrating all suites.
+- `benchmarks/scheduler/runner.test.ts`: Vitest test suite verifying PRNG determinism, statistical calculations, and fixture generators.
+- `docs/benchmarks/scheduler-baseline.md`: Comprehensive baseline performance specification with empirical data, scaling analysis, and bottleneck findings.
+- `docs/architecture/invariants.md`: Added Section 11 (Performance Measurement & Benchmarking Invariants).
+- `docs/architecture/overview.md`: Added PR 16, PR 17, and baseline specification cross-references.
+- `README.md`: Added benchmark suite documentation and `npm run benchmark:scheduler` command.
+- `package.json`: Added `"benchmark:scheduler": "npx tsx benchmarks/scheduler/runner.ts"` script.
 
 ---
 
 ## Verification & Quality Gates
 
-- **Formatting Check (`npm run format:check`)**: PASS (0 code style issues).
-- **ESLint (`npm run lint`)**: PASS (0 errors, 0 warnings).
-- **TypeScript Compilation (`npm run typecheck`)**: PASS (0 errors across all composite workspaces).
-- **Automated Tests (`npm test`)**: PASS (41 test files, 457 tests passed).
-- **Monorepo Production Build (`npm run build`)**: PASS (All 14 workspaces built cleanly).
+| Gate | Command | Result |
+| :--- | :--- | :--- |
+| **Format Check** | `npm run format:check` | **PASS** (Clean Prettier code style) |
+| **Lint** | `npm run lint` | **PASS** (0 errors, 0 warnings across all workspaces) |
+| **Typecheck** | `npm run typecheck` | **PASS** (`tsc -b` clean) |
+| **Vitest Tests** | `npm test` | **PASS** (42 test files, 469 tests passed) |
+| **Monorepo Build** | `npm run build` | **PASS** (All 14 workspaces + Next.js build clean) |
+| **Benchmark Suite** | `npm run benchmark:scheduler` | **PASS** (All 29 micro + 21 component + 27 system benchmarks + explain plans passed) |
+| **Clean Teardown** | Post-run DB/Redis check | **VERIFIED** (0 dirty jobs, leases, or Redis keys remaining) |

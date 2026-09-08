@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "benchmark:scheduler": "npx tsx benchmarks/scheduler/runner.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",
