@@ -11,6 +11,7 @@
     { "path": "packages/queue" },
     { "path": "packages/worker-registry" },
     { "path": "packages/executor" },
+    { "path": "packages/outbox" },
     { "path": "apps/api" },
     { "path": "apps/scheduler" },
     { "path": "apps/worker" },
