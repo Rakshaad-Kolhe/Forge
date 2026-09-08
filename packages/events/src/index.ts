@@ -22,3 +22,4 @@ export * from './in-process-bus.js';
 export * from './log-chunk.js';
 export * from './summarize.js';
 export * from './errors.js';
+export * from './outbox-input.js';
