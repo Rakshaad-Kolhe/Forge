@@ -189,3 +189,120 @@ describe('PgOutboxRepository — claimBatch', () => {
     expect(claimed).toHaveLength(0);
   });
 });
+
+describe('PgOutboxRepository — markPublished / markRetry (fenced)', () => {
+  let pool: DatabasePool;
+  let repo: PgOutboxRepository;
+
+  beforeAll(async () => {
+    pool = createDatabasePool({ connectionString: DEFAULT_DATABASE_URL });
+    await resetDatabase(pool);
+    await runMigrations(pool);
+    repo = new PgOutboxRepository(pool);
+  });
+  afterAll(async () => {
+    await resetDatabase(pool);
+    await pool.close();
+  });
+  beforeEach(async () => {
+    await pool.query('DELETE FROM outbox_events;');
+  });
+
+  async function claimOne() {
+    const i = input();
+    await repo.enqueue(i);
+    const [row] = await repo.claimBatch({
+      dispatcherId: 'disp-A',
+      limit: 1,
+      staleClaimBefore: new Date(Date.now() - 60000),
+    });
+    return { i, row: row! };
+  }
+
+  it('markPublished with the correct token → OK and terminal PUBLISHED', async () => {
+    const { i, row } = await claimOne();
+    expect(await repo.markPublished(row.id, row.claimToken)).toBe('OK');
+    const after = await repo.findByEventId(i.eventId);
+    expect(after!.status).toBe('PUBLISHED');
+    expect(after!.publishedAt).toBeInstanceOf(Date);
+    expect(after!.deliveryAttemptCount).toBe(0); // publish success burns no delivery budget
+  });
+
+  it('markPublished with a stale token → CLAIM_LOST and no mutation', async () => {
+    const { row } = await claimOne();
+    // simulate a reclaim by a newer owner
+    await pool.query(`UPDATE outbox_events SET claim_token = 'newer-token' WHERE id = $1;`, [
+      row.id,
+    ]);
+    expect(await repo.markPublished(row.id, row.claimToken)).toBe('CLAIM_LOST');
+    const res = await pool.query(`SELECT status, claim_token FROM outbox_events WHERE id = $1;`, [
+      row.id,
+    ]);
+    expect(res.rows[0]!.status).toBe('CLAIMED');
+    expect(res.rows[0]!.claim_token).toBe('newer-token');
+  });
+
+  it('markRetry(exhausted=false) → PENDING, backoff, delivery_attempt_count++', async () => {
+    const { i, row } = await claimOne();
+    const availableAt = new Date(Date.now() + 5000);
+    expect(
+      await repo.markRetry({
+        id: row.id,
+        claimToken: row.claimToken,
+        availableAt,
+        lastError: 'boom',
+        exhausted: false,
+      }),
+    ).toBe('OK');
+    const after = await repo.findByEventId(i.eventId);
+    expect(after!.status).toBe('PENDING');
+    expect(after!.deliveryAttemptCount).toBe(1);
+    expect(after!.dispatchCount).toBe(1);
+    expect(after!.lastError).toBe('boom');
+    expect(after!.availableAt.getTime()).toBeGreaterThan(Date.now() + 1000);
+  });
+
+  it('markRetry(exhausted=true) → DEAD, retains payload + last_error + attempts', async () => {
+    const { i, row } = await claimOne();
+    expect(
+      await repo.markRetry({
+        id: row.id,
+        claimToken: row.claimToken,
+        availableAt: new Date(),
+        lastError: 'final',
+        exhausted: true,
+      }),
+    ).toBe('OK');
+    const after = await repo.findByEventId(i.eventId);
+    expect(after!.status).toBe('DEAD');
+    expect(after!.deliveryAttemptCount).toBe(1);
+    expect(after!.lastError).toBe('final');
+    expect(after!.payload).toEqual(i.payload);
+  });
+
+  it('markRetry with a stale token → CLAIM_LOST, no PUBLISHED→PENDING resurrection', async () => {
+    const { i, row } = await claimOne();
+    await repo.markPublished(row.id, row.claimToken); // row is now PUBLISHED, token cleared
+    const outcome = await repo.markRetry({
+      id: row.id,
+      claimToken: row.claimToken,
+      availableAt: new Date(),
+      lastError: 'late',
+      exhausted: false,
+    });
+    expect(outcome).toBe('CLAIM_LOST');
+    expect((await repo.findByEventId(i.eventId))!.status).toBe('PUBLISHED');
+  });
+
+  it('truncates last_error to 2000 chars', async () => {
+    const { i, row } = await claimOne();
+    await repo.markRetry({
+      id: row.id,
+      claimToken: row.claimToken,
+      availableAt: new Date(),
+      lastError: 'x'.repeat(5000),
+      exhausted: false,
+    });
+    expect((await repo.findByEventId(i.eventId))!.lastError!.length).toBe(2000);
+  });
+});

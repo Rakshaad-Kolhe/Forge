@@ -27,6 +27,8 @@ const SELECT_COLS = `
   available_at, claimed_at, claimed_by, claim_token, published_at, last_error, created_at
 `;
 
+const LAST_ERROR_MAX = 2000;
+
 /**
  * PostgreSQL-backed {@link OutboxRepository}. Enqueue paths are fully implemented here;
  * the dispatch/prune methods are wired stubs replaced in later PR 21 tasks.
@@ -187,12 +189,48 @@ export class PgOutboxRepository implements OutboxRepository {
     }
   }
 
-  public markPublished(_id: string, _claimToken: string): Promise<OutboxMarkOutcome> {
-    throw new Error('not implemented until Task 7');
+  public async markPublished(id: string, claimToken: string): Promise<OutboxMarkOutcome> {
+    try {
+      const res = await this.client.query(
+        `UPDATE outbox_events
+         SET status = 'PUBLISHED', published_at = NOW(),
+             claimed_at = NULL, claimed_by = NULL, claim_token = NULL
+         WHERE id = $1 AND status = 'CLAIMED' AND claim_token = $2;`,
+        [id, claimToken],
+      );
+      return (res.rowCount ?? 0) === 0 ? 'CLAIM_LOST' : 'OK';
+    } catch (err) {
+      throw new PersistenceError(
+        `Failed to mark outbox row "${id}" published: ${(err as Error).message}`,
+        err as Error,
+      );
+    }
   }
 
-  public markRetry(_input: OutboxRetryInput): Promise<OutboxMarkOutcome> {
-    throw new Error('not implemented until Task 7');
+  public async markRetry(input: OutboxRetryInput): Promise<OutboxMarkOutcome> {
+    const lastError = input.lastError.slice(0, LAST_ERROR_MAX);
+    const sql = input.exhausted
+      ? `UPDATE outbox_events
+           SET status = 'DEAD', last_error = $3,
+               delivery_attempt_count = delivery_attempt_count + 1
+           WHERE id = $1 AND status = 'CLAIMED' AND claim_token = $2;`
+      : `UPDATE outbox_events
+           SET status = 'PENDING', available_at = $4, last_error = $3,
+               delivery_attempt_count = delivery_attempt_count + 1,
+               claimed_at = NULL, claimed_by = NULL, claim_token = NULL
+           WHERE id = $1 AND status = 'CLAIMED' AND claim_token = $2;`;
+    const params = input.exhausted
+      ? [input.id, input.claimToken, lastError]
+      : [input.id, input.claimToken, lastError, input.availableAt];
+    try {
+      const res = await this.client.query(sql, params);
+      return (res.rowCount ?? 0) === 0 ? 'CLAIM_LOST' : 'OK';
+    } catch (err) {
+      throw new PersistenceError(
+        `Failed to mark outbox row "${input.id}" for retry: ${(err as Error).message}`,
+        err as Error,
+      );
+    }
   }
 
   public deletePublishedBefore(_cutoff: Date, _limit: number): Promise<number> {
