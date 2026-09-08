@@ -86,3 +86,106 @@ describe('PgOutboxRepository — enqueue', () => {
     expect(rows).toHaveLength(3);
   });
 });
+
+describe('PgOutboxRepository — claimBatch', () => {
+  let pool: DatabasePool;
+  let repo: PgOutboxRepository;
+
+  beforeAll(async () => {
+    pool = createDatabasePool({ connectionString: DEFAULT_DATABASE_URL });
+    await resetDatabase(pool);
+    await runMigrations(pool);
+    repo = new PgOutboxRepository(pool);
+  });
+  afterAll(async () => {
+    await resetDatabase(pool);
+    await pool.close();
+  });
+  beforeEach(async () => {
+    await pool.query('DELETE FROM outbox_events;');
+  });
+
+  it('claims due PENDING rows, sets a distinct token per row, bumps dispatch_count only', async () => {
+    await repo.enqueueMany([input(), input()]);
+    const claimed = await repo.claimBatch({
+      dispatcherId: 'disp-A',
+      limit: 10,
+      staleClaimBefore: new Date(Date.now() - 60000),
+    });
+    expect(claimed).toHaveLength(2);
+    expect(new Set(claimed.map((c) => c.claimToken)).size).toBe(2);
+    for (const c of claimed) {
+      expect(c.status).toBe('CLAIMED');
+      expect(c.dispatchCount).toBe(1);
+      expect(c.deliveryAttemptCount).toBe(0);
+      expect(c.claimedBy).toBe('disp-A');
+    }
+  });
+
+  it('does not claim rows whose available_at is in the future', async () => {
+    const i = input();
+    await repo.enqueue(i);
+    await pool.query(
+      `UPDATE outbox_events SET available_at = NOW() + INTERVAL '1 hour' WHERE id = $1;`,
+      [i.id],
+    );
+    const claimed = await repo.claimBatch({
+      dispatcherId: 'disp-A',
+      limit: 10,
+      staleClaimBefore: new Date(Date.now() - 60000),
+    });
+    expect(claimed).toHaveLength(0);
+  });
+
+  it('reclaims a CLAIMED row older than staleClaimBefore and bumps dispatch_count again', async () => {
+    const i = input();
+    await repo.enqueue(i);
+    await repo.claimBatch({
+      dispatcherId: 'disp-A',
+      limit: 10,
+      staleClaimBefore: new Date(Date.now() - 60000),
+    });
+    await pool.query(
+      `UPDATE outbox_events SET claimed_at = NOW() - INTERVAL '10 minutes' WHERE id = $1;`,
+      [i.id],
+    );
+    const reclaimed = await repo.claimBatch({
+      dispatcherId: 'disp-B',
+      limit: 10,
+      staleClaimBefore: new Date(Date.now() - 60000),
+    });
+    expect(reclaimed).toHaveLength(1);
+    expect(reclaimed[0]!.dispatchCount).toBe(2);
+    expect(reclaimed[0]!.deliveryAttemptCount).toBe(0);
+    expect(reclaimed[0]!.claimedBy).toBe('disp-B');
+  });
+
+  it('respects the batch limit and occurred_at ordering', async () => {
+    const old = input({ occurredAt: new Date(Date.now() - 10000).toISOString() });
+    const recent = input({ occurredAt: new Date().toISOString() });
+    await repo.enqueue(recent);
+    await repo.enqueue(old);
+    const claimed = await repo.claimBatch({
+      dispatcherId: 'disp-A',
+      limit: 1,
+      staleClaimBefore: new Date(Date.now() - 60000),
+    });
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]!.eventId).toBe(old.eventId);
+  });
+
+  it('does not claim PUBLISHED or DEAD rows', async () => {
+    const i = input();
+    await repo.enqueue(i);
+    await pool.query(
+      `UPDATE outbox_events SET status = 'PUBLISHED', published_at = NOW() WHERE id = $1;`,
+      [i.id],
+    );
+    const claimed = await repo.claimBatch({
+      dispatcherId: 'disp-A',
+      limit: 10,
+      staleClaimBefore: new Date(Date.now() - 60000),
+    });
+    expect(claimed).toHaveLength(0);
+  });
+});

@@ -150,8 +150,41 @@ export class PgOutboxRepository implements OutboxRepository {
   // Dispatch / prune surface — wired with real signatures, bodies land in Tasks 6-8.
   // ---------------------------------------------------------------------------
 
-  public claimBatch(_options: OutboxClaimOptions): Promise<OutboxClaimedRow[]> {
-    throw new Error('not implemented until Task 6');
+  public async claimBatch(options: OutboxClaimOptions): Promise<OutboxClaimedRow[]> {
+    try {
+      const res = await this.client.query<OutboxEventRow>(
+        `
+        WITH claimable AS (
+          SELECT id AS claim_id
+          FROM outbox_events
+          WHERE (status = 'PENDING' AND available_at <= NOW())
+             OR (status = 'CLAIMED' AND claimed_at < $2)
+          ORDER BY occurred_at, id
+          LIMIT $3
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE outbox_events o
+        SET status = 'CLAIMED',
+            claimed_at = NOW(),
+            claimed_by = $1,
+            claim_token = gen_random_uuid()::text,
+            dispatch_count = o.dispatch_count + 1
+        FROM claimable c
+        WHERE o.id = c.claim_id
+        RETURNING ${SELECT_COLS};
+        `,
+        [options.dispatcherId, options.staleClaimBefore, options.limit],
+      );
+      return res.rows.map((row) => ({
+        ...this.mapRow(row),
+        claimToken: row.claim_token as string,
+      }));
+    } catch (err) {
+      throw new PersistenceError(
+        `Failed to claim outbox batch: ${(err as Error).message}`,
+        err as Error,
+      );
+    }
   }
 
   public markPublished(_id: string, _claimToken: string): Promise<OutboxMarkOutcome> {
