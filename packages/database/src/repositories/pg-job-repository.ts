@@ -241,6 +241,7 @@ export class PgJobRepository implements JobRepository {
         priority: row.priority ?? 0,
         retryPolicy,
         nextAttemptAt: row.next_attempt_at ?? undefined,
+        createdAt: row.created_at,
         initialStatus: row.status as JobStatus,
         attempts,
       });

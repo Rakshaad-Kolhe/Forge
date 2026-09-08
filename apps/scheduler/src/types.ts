@@ -1,5 +1,7 @@
 import type {
+  EffectivePriorityInfo,
   JobRequirements,
+  QueueAgingConfig,
   ScheduleDecision,
   ScheduledDecision,
   ScheduleDecisionStatus,
@@ -12,7 +14,9 @@ import type { Job, WorkerCandidate } from '@forge/pipeline';
 import type { WorkerLiveness, WorkerStatus } from '@forge/worker-registry';
 
 export type {
+  EffectivePriorityInfo,
   JobRequirements,
+  QueueAgingConfig,
   ScheduleDecision,
   ScheduledDecision,
   ScheduleDecisionStatus,
@@ -34,11 +38,20 @@ export interface JobOrderingPolicy {
 
   /**
    * Orders candidate jobs according to policy rules.
+   * Accepts an optional `now` timestamp for deterministic, virtual-time evaluation.
    */
   orderJobs<
-    T extends { readonly priority?: number; readonly id?: string; readonly jobId?: string },
+    T extends {
+      readonly priority?: number;
+      readonly id?: string;
+      readonly jobId?: string;
+      readonly createdAt?: Date | string;
+      readonly queuedAt?: Date | string;
+      readonly nextAttemptAt?: Date | string;
+    },
   >(
     jobs: readonly T[],
+    now?: Date,
   ): T[];
 }
 

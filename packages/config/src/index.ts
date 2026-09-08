@@ -1,5 +1,13 @@
 import { z } from 'zod';
 import type { AppConfig, LogLevel, NodeEnvironment } from '@forge/contracts';
+import {
+  DEFAULT_FAIRNESS_AGING_INTERVAL_MS,
+  MIN_FAIRNESS_AGING_INTERVAL_MS,
+  DEFAULT_FAIRNESS_AGE_BONUS_STEP,
+  MIN_FAIRNESS_AGE_BONUS_STEP,
+  DEFAULT_FAIRNESS_MAX_AGE_BONUS,
+  MAX_FAIRNESS_AGE_BONUS_LIMIT,
+} from '@forge/contracts';
 
 /**
  * Custom error class thrown when configuration validation fails.
@@ -108,6 +116,49 @@ const configSchema = z
       .default('3600000')
       .transform(Number)
       .pipe(z.number().int().min(1000, 'MAX_RETRY_BACKOFF_MS must be at least 1000ms')),
+    FAIRNESS_AGING_INTERVAL_MS: z
+      .string()
+      .regex(/^\d+$/, 'FAIRNESS_AGING_INTERVAL_MS must be a valid integer')
+      .default(String(DEFAULT_FAIRNESS_AGING_INTERVAL_MS))
+      .transform(Number)
+      .pipe(
+        z
+          .number()
+          .int()
+          .min(
+            MIN_FAIRNESS_AGING_INTERVAL_MS,
+            `FAIRNESS_AGING_INTERVAL_MS must be at least ${MIN_FAIRNESS_AGING_INTERVAL_MS}ms`,
+          ),
+      ),
+    FAIRNESS_AGE_BONUS_STEP: z
+      .string()
+      .regex(/^\d+$/, 'FAIRNESS_AGE_BONUS_STEP must be a valid integer')
+      .default(String(DEFAULT_FAIRNESS_AGE_BONUS_STEP))
+      .transform(Number)
+      .pipe(
+        z
+          .number()
+          .int()
+          .min(
+            MIN_FAIRNESS_AGE_BONUS_STEP,
+            `FAIRNESS_AGE_BONUS_STEP must be at least ${MIN_FAIRNESS_AGE_BONUS_STEP}`,
+          ),
+      ),
+    FAIRNESS_MAX_AGE_BONUS: z
+      .string()
+      .regex(/^\d+$/, 'FAIRNESS_MAX_AGE_BONUS must be a valid integer')
+      .default(String(DEFAULT_FAIRNESS_MAX_AGE_BONUS))
+      .transform(Number)
+      .pipe(
+        z
+          .number()
+          .int()
+          .min(0, 'FAIRNESS_MAX_AGE_BONUS must be non-negative')
+          .max(
+            MAX_FAIRNESS_AGE_BONUS_LIMIT,
+            `FAIRNESS_MAX_AGE_BONUS cannot exceed ${MAX_FAIRNESS_AGE_BONUS_LIMIT}`,
+          ),
+      ),
   })
   .refine((data) => data.WORKER_HEARTBEAT_TTL_SECONDS * 1000 > data.WORKER_HEARTBEAT_INTERVAL_MS, {
     message:
@@ -131,6 +182,10 @@ const configSchema = z
   .refine((data) => data.MAX_RETRY_BACKOFF_MS >= data.DEFAULT_RETRY_BASE_DELAY_MS, {
     message: 'MAX_RETRY_BACKOFF_MS must be greater than or equal to DEFAULT_RETRY_BASE_DELAY_MS',
     path: ['MAX_RETRY_BACKOFF_MS'],
+  })
+  .refine((data) => data.FAIRNESS_MAX_AGE_BONUS >= data.FAIRNESS_AGE_BONUS_STEP, {
+    message: 'FAIRNESS_MAX_AGE_BONUS must be greater than or equal to FAIRNESS_AGE_BONUS_STEP',
+    path: ['FAIRNESS_MAX_AGE_BONUS'],
   });
 
 export type RawConfigInput = Record<string, string | undefined>;
@@ -174,6 +229,9 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     MAX_JOB_ATTEMPTS,
     DEFAULT_RETRY_BASE_DELAY_MS,
     MAX_RETRY_BACKOFF_MS,
+    FAIRNESS_AGING_INTERVAL_MS,
+    FAIRNESS_AGE_BONUS_STEP,
+    FAIRNESS_MAX_AGE_BONUS,
   } = result.data;
 
   return {
@@ -195,5 +253,8 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     maxJobAttempts: MAX_JOB_ATTEMPTS,
     defaultRetryBaseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
     maxRetryBackoffMs: MAX_RETRY_BACKOFF_MS,
+    fairnessAgingIntervalMs: FAIRNESS_AGING_INTERVAL_MS,
+    fairnessAgeBonusStep: FAIRNESS_AGE_BONUS_STEP,
+    fairnessMaxAgeBonus: FAIRNESS_MAX_AGE_BONUS,
   };
 }

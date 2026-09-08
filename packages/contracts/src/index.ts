@@ -64,7 +64,60 @@ export interface AppConfig {
   maxJobAttempts: number;
   defaultRetryBaseDelayMs: number;
   maxRetryBackoffMs: number;
+  fairnessAgingIntervalMs: number;
+  fairnessAgeBonusStep: number;
+  fairnessMaxAgeBonus: number;
 }
+
+/**
+ * Configuration options for queue-aging fairness policy.
+ */
+export interface QueueAgingConfig {
+  readonly agingIntervalMs: number;
+  readonly ageBonusStep: number;
+  readonly maxAgeBonus: number;
+}
+
+/**
+ * Breakdown of effective priority calculation for explainability and diagnostics.
+ */
+export interface EffectivePriorityInfo {
+  readonly basePriority: number;
+  readonly waitingMs: number;
+  readonly ageBonus: number;
+  readonly effectivePriority: number;
+  readonly waitingSince: Date;
+}
+
+/**
+ * Default aging interval (60,000 ms / 1 minute) for queue aging fairness.
+ */
+export const DEFAULT_FAIRNESS_AGING_INTERVAL_MS = 60000;
+
+/**
+ * Minimum permitted aging interval (1,000 ms / 1 second) for queue aging fairness.
+ */
+export const MIN_FAIRNESS_AGING_INTERVAL_MS = 1000;
+
+/**
+ * Default priority bonus step earned per aging interval.
+ */
+export const DEFAULT_FAIRNESS_AGE_BONUS_STEP = 10;
+
+/**
+ * Minimum permitted priority bonus step earned per aging interval.
+ */
+export const MIN_FAIRNESS_AGE_BONUS_STEP = 1;
+
+/**
+ * Default maximum age bonus that can be accumulated through queue aging.
+ */
+export const DEFAULT_FAIRNESS_MAX_AGE_BONUS = 500;
+
+/**
+ * Maximum permitted limit for fairness max age bonus.
+ */
+export const MAX_FAIRNESS_AGE_BONUS_LIMIT = 2000;
 
 /**
  * Worker execution capabilities advertised to the cluster.

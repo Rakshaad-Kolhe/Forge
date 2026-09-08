@@ -93,15 +93,40 @@ describe('Job Domain Model', () => {
     expect(() => job.succeed()).toThrow(InvalidStateTransitionError);
   });
 
+  it('tracks createdAt and queuedAt timestamps', () => {
+    const createdDate = new Date('2026-09-08T10:00:00.000Z');
+    const queuedDate = new Date('2026-09-08T10:05:00.000Z');
+
+    const job = new Job({
+      id: createJobId('job-timestamps'),
+      pipelineRunId: createPipelineRunId('run-1'),
+      stepName: 'build',
+      command: 'npm run build',
+      createdAt: createdDate,
+    });
+
+    expect(job.createdAt).toEqual(createdDate);
+    expect(job.queuedAt).toBeUndefined();
+
+    job.markQueued(queuedDate);
+    expect(job.status).toBe('QUEUED');
+    expect(job.queuedAt).toEqual(queuedDate);
+  });
+
   it('serializes cleanly to JSON', () => {
+    const createdDate = new Date('2026-09-08T10:00:00.000Z');
+    const queuedDate = new Date('2026-09-08T10:05:00.000Z');
+
     const job = new Job({
       id: createJobId('job-serialize'),
       pipelineRunId: createPipelineRunId('run-1'),
       stepName: 'build',
       command: 'npm run build',
       dependsOn: ['test'],
+      createdAt: createdDate,
     });
 
+    job.markQueued(queuedDate);
     job.createAttempt();
 
     expect(job.toJSON()).toEqual({
@@ -111,8 +136,9 @@ describe('Job Domain Model', () => {
       command: 'npm run build',
       dependsOn: ['test'],
       priority: 0,
-      status: 'PENDING',
-
+      status: 'QUEUED',
+      createdAt: createdDate.toISOString(),
+      queuedAt: queuedDate.toISOString(),
       attempts: [
         {
           id: 'job-serialize-attempt-1',

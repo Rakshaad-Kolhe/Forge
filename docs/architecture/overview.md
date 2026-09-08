@@ -63,6 +63,7 @@ Forge V2 is designed as a distributed system composed of:
 - **[Container Executor & Sandboxed Job Execution Specification](executor.md)**
 - **[Retry Policies, Backoff & Attempt Orchestration Specification](retry.md)**
 - **[Reliability, Worker Loss Recovery & Graceful Shutdown Specification](reliability.md)**
+- **[Fairness, Queue Aging & Starvation Prevention Specification](fairness.md)**
 - **[Architecture Glossary](glossary.md)**
 - **[Architectural Invariants Catalog](invariants.md)**
 - **[Service Boundaries Specification](boundaries.md)**
@@ -100,5 +101,7 @@ PR 01: Repository Foundation & Architecture Contract (Completed)
   │
   ├──► PR 14: Retry Policies, Exponential Backoff & Attempt Orchestration (Completed)
   │
-  └──► PR 15: Dead-Letter Queue, Worker Loss Recovery & Graceful Shutdown (Completed)
+  ├──► PR 15: Dead-Letter Queue, Worker Loss Recovery & Graceful Shutdown (Completed)
+  │
+  └──► PR 16: Fairness, Queue Aging & Starvation Prevention (Current)
 ```

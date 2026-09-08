@@ -4,6 +4,7 @@ import { createLogger } from '@forge/logging';
 import { createJobId, createPipelineRunId, Job, type WorkerCandidate } from '@forge/pipeline';
 import { describe, expect, it, vi } from 'vitest';
 import { JobNotFoundError, JobSourceError, WorkerSourceError } from './errors.js';
+import { FairAgingPriorityPolicy } from './fairness-policy.js';
 import {
   evaluatePlacement,
   evaluatePrioritizedWork,
@@ -913,6 +914,119 @@ describe('Scheduler — evaluatePrioritizedWork & schedulePrioritized', () => {
       // Wait another 50ms and verify no further sweeps fired
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(sweepCount).toBe(finalCount);
+    });
+  });
+
+  describe('Fairness-Aware Scheduling (PR 16)', () => {
+    it('schedules prioritized jobs using FairAgingPriorityPolicy and virtual time', async () => {
+      const t0 = new Date('2026-09-08T12:00:00.000Z');
+      const tAged = new Date('2026-09-08T12:05:00.000Z'); // 5 intervals (50 bonus)
+
+      const lowJob = new Job({
+        id: createJobId('job-fair-low'),
+        pipelineRunId: createPipelineRunId('run-1'),
+        stepName: 'test',
+        command: 'echo test',
+        priority: 10,
+        createdAt: t0,
+      });
+
+      const highJob = new Job({
+        id: createJobId('job-fair-high'),
+        pipelineRunId: createPipelineRunId('run-2'),
+        stepName: 'test',
+        command: 'echo test',
+        priority: 50,
+        createdAt: tAged,
+      });
+
+      const workerSource: WorkerSource = {
+        listWorkers: vi.fn().mockResolvedValue([
+          {
+            workerId: 'worker-fair-1',
+            capabilities: { executors: ['docker'] },
+            resources: { cpuCores: 4, memoryBytes: 8192 },
+            status: 'READY',
+            liveness: 'ALIVE',
+          },
+        ]),
+      };
+
+      const fairnessPolicy = new FairAgingPriorityPolicy({
+        agingIntervalMs: 60000,
+        ageBonusStep: 10,
+        maxAgeBonus: 100,
+      });
+
+      const scheduler = new ForgeScheduler({
+        workerSource,
+        jobPolicy: fairnessPolicy,
+      });
+
+      // At tAged: lowJob effective priority is 10 + 50 = 60 > highJob 50
+      const result = await scheduler.schedulePrioritized([highJob, lowJob], tAged);
+
+      expect(result.orderedDecisions[0]!.jobId).toBe('job-fair-low');
+      expect(result.orderedDecisions[1]!.jobId).toBe('job-fair-high');
+      expect(result.scheduledDecisions[0]!.jobId).toBe('job-fair-low');
+    });
+
+    it('passes virtual now through scheduleDueJobs to honor fair queue aging', async () => {
+      const t0 = new Date('2026-09-08T12:00:00.000Z');
+      const tAged = new Date('2026-09-08T12:05:00.000Z');
+
+      const lowJob = new Job({
+        id: createJobId('job-due-low'),
+        pipelineRunId: createPipelineRunId('run-1'),
+        stepName: 'test',
+        command: 'echo test',
+        priority: 10,
+        createdAt: t0,
+      });
+
+      const highJob = new Job({
+        id: createJobId('job-due-high'),
+        pipelineRunId: createPipelineRunId('run-2'),
+        stepName: 'test',
+        command: 'echo test',
+        priority: 50,
+        createdAt: tAged,
+      });
+
+      const mockJobSource = {
+        getJob: vi.fn(async (id: string) => (id === 'job-due-low' ? lowJob : highJob)),
+        findSchedulableJobs: vi.fn(async () => [highJob, lowJob]),
+      };
+
+      const workerSource: WorkerSource = {
+        listWorkers: vi.fn().mockResolvedValue([
+          {
+            workerId: 'worker-due-1',
+            capabilities: { executors: ['docker'] },
+            resources: { cpuCores: 4, memoryBytes: 8192 },
+            status: 'READY',
+            liveness: 'ALIVE',
+          },
+        ]),
+      };
+
+      const fairnessPolicy = new FairAgingPriorityPolicy({
+        agingIntervalMs: 60000,
+        ageBonusStep: 10,
+        maxAgeBonus: 100,
+      });
+
+      const scheduler = new ForgeScheduler({
+        jobSource: mockJobSource,
+        workerSource,
+        jobPolicy: fairnessPolicy,
+      });
+
+      const result = await scheduler.scheduleDueJobs({ now: tAged });
+
+      expect(mockJobSource.findSchedulableJobs).toHaveBeenCalledWith({ now: tAged });
+      expect(result.orderedDecisions[0]!.jobId).toBe('job-due-low');
+      expect(result.orderedDecisions[1]!.jobId).toBe('job-due-high');
     });
   });
 });

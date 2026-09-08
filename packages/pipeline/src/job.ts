@@ -22,6 +22,8 @@ export interface JobOptions {
   priority?: number;
   retryPolicy?: RetryPolicy;
   nextAttemptAt?: Date | string;
+  createdAt?: Date | string;
+  queuedAt?: Date | string;
   initialStatus?: JobStatus;
   attempts?: readonly JobAttempt[];
 }
@@ -37,6 +39,8 @@ export class Job {
   public readonly dependsOn: readonly string[];
   public readonly requirements: JobRequirements;
   public readonly priority: number;
+  public readonly createdAt: Date;
+  private queuedAtTimestamp?: Date;
   private readonly configuredRetryPolicy?: RetryPolicy;
   private nextScheduledAttemptAt?: Date;
   private readonly stateMachine: StateMachine<JobStatus>;
@@ -54,6 +58,8 @@ export class Job {
     this.nextScheduledAttemptAt = options.nextAttemptAt
       ? new Date(options.nextAttemptAt)
       : undefined;
+    this.createdAt = options.createdAt ? new Date(options.createdAt) : new Date();
+    this.queuedAtTimestamp = options.queuedAt ? new Date(options.queuedAt) : undefined;
     this.stateMachine = createJobStateMachine(options.id, options.initialStatus ?? 'PENDING');
     if (options.attempts) {
       this.attemptsList.push(...options.attempts);
@@ -74,6 +80,10 @@ export class Job {
 
   public clearNextAttemptAt(): void {
     this.nextScheduledAttemptAt = undefined;
+  }
+
+  public get queuedAt(): Date | undefined {
+    return this.queuedAtTimestamp;
   }
 
   public get status(): JobStatus {
@@ -110,8 +120,11 @@ export class Job {
     return attempt;
   }
 
-  public markQueued(): void {
+  public markQueued(timestamp?: Date | string): void {
     this.stateMachine.transitionTo('QUEUED');
+    this.queuedAtTimestamp = timestamp
+      ? new Date(timestamp)
+      : (this.queuedAtTimestamp ?? new Date());
   }
 
   public start(): void {
@@ -152,6 +165,8 @@ export class Job {
         ? { nextAttemptAt: this.nextScheduledAttemptAt.toISOString() }
         : {}),
       status: this.status,
+      createdAt: this.createdAt.toISOString(),
+      ...(this.queuedAtTimestamp ? { queuedAt: this.queuedAtTimestamp.toISOString() } : {}),
       attempts: this.attemptsList.map((att) => att.toJSON()),
     };
   }
