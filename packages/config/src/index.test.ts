@@ -26,6 +26,17 @@ describe('loadConfig', () => {
       fairnessAgingIntervalMs: 60000,
       fairnessAgeBonusStep: 10,
       fairnessMaxAgeBonus: 500,
+      outboxDispatchPollIntervalMs: 1000,
+      outboxDispatchBatchSize: 100,
+      outboxClaimTimeoutMs: 60000,
+      outboxPublishTimeoutMs: 10000,
+      outboxMaxDeliveryAttempts: 10,
+      outboxDeliveryBaseBackoffMs: 500,
+      outboxDeliveryMaxBackoffMs: 60000,
+      outboxMaxPayloadBytes: 65536,
+      outboxRetentionMaxAgeMs: 604800000,
+      outboxRetentionBatchSize: 500,
+      outboxRetentionEveryNTicks: 60,
     });
   });
 
@@ -75,6 +86,17 @@ describe('loadConfig', () => {
       fairnessAgingIntervalMs: 30000,
       fairnessAgeBonusStep: 25,
       fairnessMaxAgeBonus: 1000,
+      outboxDispatchPollIntervalMs: 1000,
+      outboxDispatchBatchSize: 100,
+      outboxClaimTimeoutMs: 60000,
+      outboxPublishTimeoutMs: 10000,
+      outboxMaxDeliveryAttempts: 10,
+      outboxDeliveryBaseBackoffMs: 500,
+      outboxDeliveryMaxBackoffMs: 60000,
+      outboxMaxPayloadBytes: 65536,
+      outboxRetentionMaxAgeMs: 604800000,
+      outboxRetentionBatchSize: 500,
+      outboxRetentionEveryNTicks: 60,
     });
   });
 
@@ -192,5 +214,59 @@ describe('loadConfig', () => {
         FAIRNESS_MAX_AGE_BONUS: '50',
       });
     }).toThrow(ConfigValidationError);
+  });
+
+  describe('outbox configuration (PR 21)', () => {
+    it('applies conservative outbox defaults', () => {
+      const cfg = loadConfig({});
+      expect(cfg.outboxDispatchPollIntervalMs).toBe(1000);
+      expect(cfg.outboxDispatchBatchSize).toBe(100);
+      expect(cfg.outboxClaimTimeoutMs).toBe(60000);
+      expect(cfg.outboxPublishTimeoutMs).toBe(10000);
+      expect(cfg.outboxMaxDeliveryAttempts).toBe(10);
+      expect(cfg.outboxDeliveryBaseBackoffMs).toBe(500);
+      expect(cfg.outboxDeliveryMaxBackoffMs).toBe(60000);
+      expect(cfg.outboxMaxPayloadBytes).toBe(65536);
+      expect(cfg.outboxRetentionMaxAgeMs).toBe(604800000);
+      expect(cfg.outboxRetentionBatchSize).toBe(500);
+      expect(cfg.outboxRetentionEveryNTicks).toBe(60);
+    });
+
+    it('parses overrides', () => {
+      const cfg = loadConfig({
+        OUTBOX_DISPATCH_BATCH_SIZE: '250',
+        OUTBOX_RETENTION_MAX_AGE_MS: '0',
+      });
+      expect(cfg.outboxDispatchBatchSize).toBe(250);
+      expect(cfg.outboxRetentionMaxAgeMs).toBe(0);
+    });
+
+    it('rejects claim timeout below publish timeout + poll interval', () => {
+      expect(() =>
+        loadConfig({
+          OUTBOX_CLAIM_TIMEOUT_MS: '5000',
+          OUTBOX_PUBLISH_TIMEOUT_MS: '10000',
+          OUTBOX_DISPATCH_POLL_INTERVAL_MS: '1000',
+        }),
+      ).toThrow(/OUTBOX_CLAIM_TIMEOUT_MS/);
+    });
+
+    it('rejects max backoff below base backoff', () => {
+      expect(() =>
+        loadConfig({
+          OUTBOX_DELIVERY_BASE_BACKOFF_MS: '5000',
+          OUTBOX_DELIVERY_MAX_BACKOFF_MS: '1000',
+        }),
+      ).toThrow(/OUTBOX_DELIVERY_MAX_BACKOFF_MS/);
+    });
+
+    it('rejects batch size over 1000 and delivery attempts over 100', () => {
+      expect(() => loadConfig({ OUTBOX_DISPATCH_BATCH_SIZE: '5000' })).toThrow(
+        /OUTBOX_DISPATCH_BATCH_SIZE/,
+      );
+      expect(() => loadConfig({ OUTBOX_MAX_DELIVERY_ATTEMPTS: '500' })).toThrow(
+        /OUTBOX_MAX_DELIVERY_ATTEMPTS/,
+      );
+    });
   });
 });

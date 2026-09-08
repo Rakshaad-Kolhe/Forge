@@ -67,6 +67,17 @@ export interface AppConfig {
   fairnessAgingIntervalMs: number;
   fairnessAgeBonusStep: number;
   fairnessMaxAgeBonus: number;
+  outboxDispatchPollIntervalMs: number;
+  outboxDispatchBatchSize: number;
+  outboxClaimTimeoutMs: number;
+  outboxPublishTimeoutMs: number;
+  outboxMaxDeliveryAttempts: number;
+  outboxDeliveryBaseBackoffMs: number;
+  outboxDeliveryMaxBackoffMs: number;
+  outboxMaxPayloadBytes: number;
+  outboxRetentionMaxAgeMs: number;
+  outboxRetentionBatchSize: number;
+  outboxRetentionEveryNTicks: number;
 }
 
 /**
