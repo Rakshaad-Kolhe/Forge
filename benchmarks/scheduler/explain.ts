@@ -47,6 +47,78 @@ export async function runQueryExplainPlans(): Promise<ExplainPlanResult[]> {
     const resLock = await pool.query<{ 'QUERY PLAN': string }>(lockSql);
     const planLock = resLock.rows.map((r) => r['QUERY PLAN']);
     results.push(parseExplainPlan('PgWorkerLeaseRepository.claim (job lock)', lockSql, planLock));
+
+    // 4. Batched Job Lock Query (FOR UPDATE ANY)
+    const batchLockSql = `
+      EXPLAIN (ANALYZE, BUFFERS)
+      SELECT id, status FROM jobs
+      WHERE id = ANY(ARRAY['00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002']::text[])
+      ORDER BY id ASC FOR UPDATE;
+    `;
+    const resBatchLock = await pool.query<{ 'QUERY PLAN': string }>(batchLockSql);
+    const planBatchLock = resBatchLock.rows.map((r) => r['QUERY PLAN']);
+    results.push(
+      parseExplainPlan(
+        'PgWorkerLeaseRepository.claimBatch (jobs lock)',
+        batchLockSql,
+        planBatchLock,
+      ),
+    );
+
+    // 5. Batched Active Worker Lease Lookup Query
+    const batchLeaseSql = `
+      EXPLAIN (ANALYZE, BUFFERS)
+      SELECT id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at,
+             (expires_at <= NOW()) AS is_expired
+      FROM worker_leases
+      WHERE job_id = ANY(ARRAY['00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002']::text[])
+        AND status = 'ACTIVE'
+      ORDER BY id ASC FOR UPDATE;
+    `;
+    const resBatchLease = await pool.query<{ 'QUERY PLAN': string }>(batchLeaseSql);
+    const planBatchLease = resBatchLease.rows.map((r) => r['QUERY PLAN']);
+    results.push(
+      parseExplainPlan(
+        'PgWorkerLeaseRepository.claimBatch (active leases check)',
+        batchLeaseSql,
+        planBatchLease,
+      ),
+    );
+
+    // 6. Batched Bulk Lease Insert (unnest)
+    const batchInsertSql = `
+      EXPLAIN (BUFFERS)
+      INSERT INTO worker_leases (
+        id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at
+      )
+      SELECT
+        v.id,
+        v.job_id,
+        v.worker_id,
+        'ACTIVE',
+        v.duration_ms,
+        NOW(),
+        NOW(),
+        NOW() + (v.duration_ms * INTERVAL '1 millisecond'),
+        NOW()
+      FROM (
+        SELECT
+          unnest(ARRAY['00000000-0000-0000-0000-000000000001']::text[]) AS id,
+          unnest(ARRAY['00000000-0000-0000-0000-000000000001']::text[]) AS job_id,
+          unnest(ARRAY['worker-bench']::text[]) AS worker_id,
+          unnest(ARRAY[30000]::int[]) AS duration_ms
+      ) AS v
+      RETURNING id, job_id;
+    `;
+    const resBatchInsert = await pool.query<{ 'QUERY PLAN': string }>(batchInsertSql);
+    const planBatchInsert = resBatchInsert.rows.map((r) => r['QUERY PLAN']);
+    results.push(
+      parseExplainPlan(
+        'PgWorkerLeaseRepository.claimBatch (bulk unnest insert)',
+        batchInsertSql,
+        planBatchInsert,
+      ),
+    );
   } catch (err) {
     // If DB is unreachable or explain fails, capture diagnostic note
     results.push({

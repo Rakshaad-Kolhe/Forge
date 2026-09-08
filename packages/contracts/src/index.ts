@@ -211,6 +211,63 @@ export type ClaimJobResult =
     };
 
 /**
+ * Default chunk size for batched lease claiming.
+ */
+export const DEFAULT_LEASE_BATCH_SIZE = 50;
+
+/**
+ * Parameters for an individual job claim within a batch.
+ */
+export interface BatchClaimItem {
+  readonly jobId: string;
+  readonly workerId: string;
+  readonly durationMs?: number;
+}
+
+/**
+ * Parameters for claiming a batch of job leases atomically.
+ */
+export interface BatchClaimOptions {
+  readonly items: readonly BatchClaimItem[];
+  readonly defaultDurationMs?: number;
+}
+
+/**
+ * Result of an individual job lease claim within a batch.
+ */
+export type BatchClaimItemResult = {
+  readonly jobId: string;
+  readonly workerId: string;
+} & (
+  | {
+      readonly status: 'ACQUIRED';
+      readonly lease: WorkerLease;
+      readonly isIdempotent?: boolean;
+    }
+  | {
+      readonly status: 'CONFLICT';
+      readonly reason: 'LEASE_ALREADY_HELD';
+      readonly currentOwnerId: string;
+      readonly expiresAt: Date;
+    }
+  | {
+      readonly status: 'NOT_CLAIMABLE';
+      readonly reason: 'JOB_NOT_FOUND' | 'JOB_NOT_CLAIMABLE' | 'DUPLICATE_IN_BATCH';
+      readonly details?: string;
+    }
+);
+
+/**
+ * Aggregated result of claiming a batch of job leases.
+ */
+export interface BatchClaimResult {
+  readonly results: readonly BatchClaimItemResult[];
+  readonly acquiredCount: number;
+  readonly conflictCount: number;
+  readonly notClaimableCount: number;
+}
+
+/**
  * Parameters for renewing an active job lease.
  */
 export interface RenewLeaseOptions {

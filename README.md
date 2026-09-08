@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 16: Fairness, Queue Aging & Starvation Prevention**.
+This repository is currently at **PR 18: Batched Worker Lease Claiming & Persistent Scheduler Optimization**.
 
 ---
 

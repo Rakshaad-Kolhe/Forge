@@ -502,4 +502,287 @@ describe('PgWorkerLeaseRepository Integration & Concurrency Tests', () => {
       }
     });
   });
+
+  describe('claimBatch', () => {
+    it('handles empty batch gracefully', async () => {
+      const result = await leaseRepo.claimBatch({ items: [] });
+      expect(result.results).toEqual([]);
+      expect(result.acquiredCount).toBe(0);
+      expect(result.conflictCount).toBe(0);
+      expect(result.notClaimableCount).toBe(0);
+    });
+
+    it('claims single-item batch', async () => {
+      const job = await createQueuedJob('batch-single');
+      const result = await leaseRepo.claimBatch({
+        items: [{ jobId: job.id, workerId: 'worker-single', durationMs: 30000 }],
+      });
+
+      expect(result.acquiredCount).toBe(1);
+      expect(result.results[0]?.status).toBe('ACQUIRED');
+      if (result.results[0]?.status === 'ACQUIRED') {
+        expect(result.results[0].lease.jobId).toBe(job.id);
+        expect(result.results[0].lease.workerId).toBe('worker-single');
+        expect(result.results[0].isIdempotent).toBe(false);
+      }
+    });
+
+    it('claims multi-item batch (50 jobs) in a single atomic operation', async () => {
+      const jobs: Job[] = [];
+      for (let i = 0; i < 50; i++) {
+        jobs.push(await createQueuedJob(`batch-50-job-${i}`));
+      }
+
+      const result = await leaseRepo.claimBatch({
+        items: jobs.map((j) => ({
+          jobId: j.id,
+          workerId: `worker-${j.id}`,
+          durationMs: 45000,
+        })),
+      });
+
+      expect(result.acquiredCount).toBe(50);
+      expect(result.conflictCount).toBe(0);
+      expect(result.notClaimableCount).toBe(0);
+      expect(result.results.length).toBe(50);
+
+      for (let i = 0; i < 50; i++) {
+        const itemRes = result.results[i]!;
+        expect(itemRes.status).toBe('ACQUIRED');
+        if (itemRes.status === 'ACQUIRED') {
+          expect(itemRes.lease.jobId).toBe(jobs[i]!.id);
+          expect(itemRes.lease.durationMs).toBe(45000);
+        }
+      }
+
+      // Verify in DB that exactly 50 ACTIVE leases exist
+      const dbLeases = await pool.query(
+        "SELECT COUNT(*) AS c FROM worker_leases WHERE status = 'ACTIVE'",
+      );
+      expect(Number(dbLeases.rows[0]!.c)).toBe(50);
+    });
+
+    it('handles partial success: queued + not found + wrong status + held by another worker', async () => {
+      const job1 = await createQueuedJob('partial-1');
+      const job2 = await createQueuedJob('partial-2'); // will be changed to RUNNING
+      await pool.query("UPDATE jobs SET status = 'RUNNING' WHERE id = $1;", [job2.id]);
+      const job3 = await createQueuedJob('partial-3'); // will have an active lease on worker-other
+      await leaseRepo.claim({ jobId: job3.id, workerId: 'worker-other', durationMs: 60000 });
+
+      const result = await leaseRepo.claimBatch({
+        items: [
+          { jobId: job1.id, workerId: 'worker-candidate', durationMs: 30000 },
+          { jobId: 'non-existent-job-xyz', workerId: 'worker-candidate', durationMs: 30000 },
+          { jobId: job2.id, workerId: 'worker-candidate', durationMs: 30000 },
+          { jobId: job3.id, workerId: 'worker-candidate', durationMs: 30000 },
+        ],
+      });
+
+      expect(result.acquiredCount).toBe(1);
+      expect(result.notClaimableCount).toBe(2);
+      expect(result.conflictCount).toBe(1);
+
+      // job 1: ACQUIRED
+      expect(result.results[0]?.status).toBe('ACQUIRED');
+      // non-existent: NOT_CLAIMABLE (JOB_NOT_FOUND)
+      expect(result.results[1]?.status).toBe('NOT_CLAIMABLE');
+      if (result.results[1]?.status === 'NOT_CLAIMABLE') {
+        expect(result.results[1].reason).toBe('JOB_NOT_FOUND');
+      }
+      // job 2: NOT_CLAIMABLE (JOB_NOT_CLAIMABLE)
+      expect(result.results[2]?.status).toBe('NOT_CLAIMABLE');
+      if (result.results[2]?.status === 'NOT_CLAIMABLE') {
+        expect(result.results[2].reason).toBe('JOB_NOT_CLAIMABLE');
+      }
+      // job 3: CONFLICT (LEASE_ALREADY_HELD)
+      expect(result.results[3]?.status).toBe('CONFLICT');
+      if (result.results[3]?.status === 'CONFLICT') {
+        expect(result.results[3].reason).toBe('LEASE_ALREADY_HELD');
+        expect(result.results[3].currentOwnerId).toBe('worker-other');
+      }
+    });
+
+    it('returns idempotent ACQUIRED when re-claiming by the same worker in batch', async () => {
+      const job = await createQueuedJob('idempotent-batch-job');
+      const firstClaim = await leaseRepo.claim({
+        jobId: job.id,
+        workerId: 'worker-same',
+        durationMs: 30000,
+      });
+      expect(firstClaim.status).toBe('ACQUIRED');
+
+      const batchResult = await leaseRepo.claimBatch({
+        items: [{ jobId: job.id, workerId: 'worker-same', durationMs: 30000 }],
+      });
+
+      expect(batchResult.acquiredCount).toBe(1);
+      expect(batchResult.results[0]?.status).toBe('ACQUIRED');
+      if (batchResult.results[0]?.status === 'ACQUIRED') {
+        expect(batchResult.results[0].isIdempotent).toBe(true);
+        expect(batchResult.results[0].lease.id).toBe(
+          (firstClaim as { lease: { id: string } }).lease.id,
+        );
+      }
+    });
+
+    it('replaces expired active leases in bulk with new active leases', async () => {
+      const job1 = await createQueuedJob('replace-exp-1');
+      const job2 = await createQueuedJob('replace-exp-2');
+
+      const c1 = await leaseRepo.claim({
+        jobId: job1.id,
+        workerId: 'worker-old-1',
+        durationMs: 10000,
+      });
+      const c2 = await leaseRepo.claim({
+        jobId: job2.id,
+        workerId: 'worker-old-2',
+        durationMs: 10000,
+      });
+      const l1Id = (c1 as { lease: { id: string } }).lease.id;
+      const l2Id = (c2 as { lease: { id: string } }).lease.id;
+
+      // Expire both leases
+      await pool.query(
+        "UPDATE worker_leases SET expires_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::text[]);",
+        [[l1Id, l2Id]],
+      );
+
+      // Now batch claim both jobs with worker-new
+      const batchResult = await leaseRepo.claimBatch({
+        items: [
+          { jobId: job1.id, workerId: 'worker-new', durationMs: 30000 },
+          { jobId: job2.id, workerId: 'worker-new', durationMs: 30000 },
+        ],
+      });
+
+      expect(batchResult.acquiredCount).toBe(2);
+      expect(batchResult.results[0]?.status).toBe('ACQUIRED');
+      expect(batchResult.results[1]?.status).toBe('ACQUIRED');
+
+      // Old leases should now have status = 'EXPIRED'
+      const oldCheck = await pool.query(
+        'SELECT id, status FROM worker_leases WHERE id = ANY($1::text[]);',
+        [[l1Id, l2Id]],
+      );
+      for (const row of oldCheck.rows) {
+        expect(row.status).toBe('EXPIRED');
+      }
+
+      // Exactly 2 ACTIVE leases should exist now, owned by worker-new
+      const newCheck = await pool.query(
+        "SELECT id, worker_id, status FROM worker_leases WHERE status = 'ACTIVE';",
+      );
+      expect(newCheck.rows.length).toBe(2);
+      expect(newCheck.rows.every((r) => r.worker_id === 'worker-new')).toBe(true);
+    });
+
+    it('handles intra-batch duplicate job IDs consistently', async () => {
+      const job1 = await createQueuedJob('intra-dup-1');
+      const job2 = await createQueuedJob('intra-dup-2');
+
+      const result = await leaseRepo.claimBatch({
+        items: [
+          { jobId: job1.id, workerId: 'worker-A', durationMs: 30000 },
+          { jobId: job1.id, workerId: 'worker-A', durationMs: 30000 }, // same worker duplicate
+          { jobId: job2.id, workerId: 'worker-B', durationMs: 30000 },
+          { jobId: job2.id, workerId: 'worker-C', durationMs: 30000 }, // competing worker duplicate
+        ],
+      });
+
+      expect(result.results.length).toBe(4);
+      // Item 0: acquired
+      expect(result.results[0]?.status).toBe('ACQUIRED');
+      if (result.results[0]?.status === 'ACQUIRED') {
+        expect(result.results[0].isIdempotent).toBe(false);
+      }
+      // Item 1: duplicate for same worker -> acquired idempotent
+      expect(result.results[1]?.status).toBe('ACQUIRED');
+      if (result.results[1]?.status === 'ACQUIRED') {
+        expect(result.results[1].isIdempotent).toBe(true);
+      }
+      // Item 2: acquired
+      expect(result.results[2]?.status).toBe('ACQUIRED');
+      // Item 3: duplicate for competing worker -> CONFLICT
+      expect(result.results[3]?.status).toBe('CONFLICT');
+      if (result.results[3]?.status === 'CONFLICT') {
+        expect(result.results[3].currentOwnerId).toBe('worker-B');
+      }
+    });
+  });
+
+  describe('claimBatch concurrency and deadlock prevention', () => {
+    it('prevents deadlocks when concurrent transactions claim overlapping jobs in reverse order', async () => {
+      const jobA = await createQueuedJob('deadlock-job-A');
+      const jobB = await createQueuedJob('deadlock-job-B');
+      const jobC = await createQueuedJob('deadlock-job-C');
+
+      // Worker 1 attempts [A, B, C], Worker 2 attempts [C, B, A]
+      // Canonical sorting by ID ensures both acquire row locks in exact same order (A then B then C),
+      // completely eliminating cyclic lock dependency deadlocks.
+      const [res1, res2] = await Promise.all([
+        leaseRepo.claimBatch({
+          items: [
+            { jobId: jobA.id, workerId: 'worker-1', durationMs: 30000 },
+            { jobId: jobB.id, workerId: 'worker-1', durationMs: 30000 },
+            { jobId: jobC.id, workerId: 'worker-1', durationMs: 30000 },
+          ],
+        }),
+        leaseRepo.claimBatch({
+          items: [
+            { jobId: jobC.id, workerId: 'worker-2', durationMs: 30000 },
+            { jobId: jobB.id, workerId: 'worker-2', durationMs: 30000 },
+            { jobId: jobA.id, workerId: 'worker-2', durationMs: 30000 },
+          ],
+        }),
+      ]);
+
+      // Exactly 3 jobs total, so across res1 and res2, acquiredCount sum must equal 3
+      const totalAcquired = res1.acquiredCount + res2.acquiredCount;
+      const totalConflict = res1.conflictCount + res2.conflictCount;
+      expect(totalAcquired).toBe(3);
+      expect(totalConflict).toBe(3);
+
+      // Verify in DB that each job has exactly 1 active lease
+      const activeRows = await pool.query(
+        "SELECT job_id, worker_id FROM worker_leases WHERE status = 'ACTIVE' ORDER BY job_id;",
+      );
+      expect(activeRows.rows.length).toBe(3);
+    });
+
+    it('handles 10 workers concurrently claiming 20 jobs without conflict errors or deadlocks', async () => {
+      const jobs: Job[] = [];
+      for (let i = 0; i < 20; i++) {
+        jobs.push(await createQueuedJob(`concurrent-batch-job-${i}`));
+      }
+
+      // 10 workers, each attempting to claim all 20 jobs (shuffled / various orderings)
+      const workerCount = 10;
+      const workers = Array.from({ length: workerCount }, (_, i) => `worker-conc-${i}`);
+
+      const promises = workers.map((workerId, idx) => {
+        // Shuffle or rotate jobs
+        const rotatedJobs = [...jobs.slice(idx), ...jobs.slice(0, idx)];
+        return leaseRepo.claimBatch({
+          items: rotatedJobs.map((j) => ({
+            jobId: j.id,
+            workerId,
+            durationMs: 30000,
+          })),
+        });
+      });
+
+      const results = await Promise.all(promises);
+
+      // Exactly 20 leases acquired across all 10 workers
+      const totalAcquired = results.reduce((sum, r) => sum + r.acquiredCount, 0);
+      expect(totalAcquired).toBe(20);
+
+      // In database, exactly 20 active leases exist
+      const activeRows = await pool.query(
+        "SELECT COUNT(*) AS c FROM worker_leases WHERE status = 'ACTIVE';",
+      );
+      expect(Number(activeRows.rows[0]!.c)).toBe(20);
+    });
+  });
 });

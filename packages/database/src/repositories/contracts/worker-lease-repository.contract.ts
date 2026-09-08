@@ -1,4 +1,6 @@
 import type {
+  BatchClaimOptions,
+  BatchClaimResult,
   ClaimJobOptions,
   ClaimJobResult,
   JobLeaseStatus,
@@ -25,6 +27,19 @@ export interface WorkerLeaseRepository {
    * - If the job does not exist or is not QUEUED, returns NOT_CLAIMABLE.
    */
   claim(options: ClaimJobOptions): Promise<ClaimJobResult>;
+
+  /**
+   * Atomically claims multiple job leases in a single batched database transaction (PR 18).
+   *
+   * Guarantees:
+   * - Deadlock-free row locking via canonical ascending ID ordering (`ORDER BY id ASC FOR UPDATE`).
+   * - At most one ACTIVE lease per job (`uq_worker_leases_active_job`).
+   * - Safe partial success: returns individual outcomes (ACQUIRED, CONFLICT, NOT_CLAIMABLE)
+   *   for each attempted job matching the input order.
+   * - Replaces expired active leases in bulk.
+   * - Reduces database round-trips and transaction overhead from O(N) to O(1).
+   */
+  claimBatch?(options: BatchClaimOptions): Promise<BatchClaimResult>;
 
   /**
    * Renews an existing active lease held by a specific worker.

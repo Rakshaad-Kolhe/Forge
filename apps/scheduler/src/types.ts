@@ -141,6 +141,7 @@ export interface SchedulerOptions {
   readonly matcher?: EligibilityMatcher;
   readonly leaseRepository?: WorkerLeaseRepository;
   readonly leaseDurationMs?: number;
+  readonly leaseBatchSize?: number;
   readonly recoveryService?: LeaseRecoveryService;
   readonly logger?: Logger;
 }
