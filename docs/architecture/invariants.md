@@ -112,3 +112,14 @@ This document establishes the binding architectural invariants for Forge V2. The
 4. **Retry Age Reset Invariant**: When a job enters retry scheduling, its waiting duration resets to start at `jobs.next_attempt_at` (the exact instant the retry backoff delay expired and the job became eligible for placement). Retried jobs must never inherit or carry over queue aging accumulated prior to failure or during backoff sleep.
 5. **Deterministic Tie-Breaking & Permutation Invariance**: Job ordering under queue aging must break ties strictly by alphanumeric `jobId` ascending code-point ordering. The ordering must be permutation-invariant and time-deterministic for any fixed evaluation instant `now`.
 6. **Hard Safety Gates Preserved**: Queue aging governs candidate job evaluation order only. It must never bypass, weaken, or alter PR 09 capability/resource matching, PR 10 deterministic worker selection, PR 12 distributed worker leases, or PR 14 active backoff gates.
+
+---
+
+## 11. Performance Measurement & Benchmarking
+
+1. **Evidence-First Benchmark Rigor**: All documented performance envelopes and latency claims must be derived from reproducible, executable benchmark runs (`npm run benchmark:scheduler`) with recorded hardware, platform, and dependency version manifests. Hand-waved, estimated, or fabricated performance numbers are strictly prohibited.
+2. **Explicit Warmup Isolation**: All benchmark suites must separate warmup cycles from measured executions. Warmup iterations allow V8 JIT optimization, garbage collection stabilization, and connection pool initialization without polluting sample distributions.
+3. **Deterministic Workload Generation**: Benchmark workloads must utilize deterministic pseudo-random generation (Mulberry32 PRNG with fixed seeds). Benchmarks must never depend on non-deterministic `Math.random()` or uncontrolled clock seeds for sample generation.
+4. **Clean Teardown Guarantee**: Benchmark runs interacting with live PostgreSQL or Redis instances must utilize isolated entity identifiers (`bench-*`) and execute guaranteed cleanup within `finally` blocks. No persistent records, test queues, or leases may remain after execution.
+5. **Zero Semantic Mutation**: Benchmark suites must measure actual production interfaces and domain models directly. The scheduler and persistence layers must not include benchmark-only shortcuts, bypassed locks, or relaxed consistency guarantees to artificially inflate metrics.
+6. **Comprehensive Statistical Profiles**: Performance must be reported via multi-metric percentile distributions (`P50`, `P95`, `P99`, `min`, `max`, `mean`, `stdDev`, `ops/sec`). Single-point averages or best-case outliers must never be presented as representative system throughput.

@@ -63,6 +63,8 @@ forge/
 │   ├── queue/          # Redis-backed FIFO job queue and recovery primitives
 │   ├── worker-registry/# Worker registration, metadata and heartbeat coordination
 │   └── executor/       # Container executor and ephemeral execution engine
+├── benchmarks/
+│   └── scheduler/      # Reproducible scheduler performance benchmarking harness
 ├── docs/
 │   └── architecture/
 │       ├── decisions/  # Architecture Decision Records (ADR-001 - ADR-005)
@@ -134,6 +136,12 @@ npm run lint
 npm run format:check
 ```
 
+### Performance Benchmarking
+
+```bash
+npm run benchmark:scheduler
+```
+
 ---
 
 ## Running Applications (PR 01 Shells)
@@ -193,6 +201,8 @@ npm run build -w apps/web
 - [Container Executor & Sandboxed Job Execution](docs/architecture/executor.md)
 - [Retry Policies, Backoff & Attempt Orchestration](docs/architecture/retry.md)
 - [Reliability, Worker Loss Recovery & Graceful Shutdown](docs/architecture/reliability.md)
+- [Fairness, Queue Aging & Starvation Prevention](docs/architecture/fairness.md)
+- [Scheduler Baseline Performance Specification](docs/benchmarks/scheduler-baseline.md)
 - [Architecture Glossary](docs/architecture/glossary.md)
 - [Architectural Invariants Catalog](docs/architecture/invariants.md)
 

@@ -40,6 +40,8 @@ Forge V2 is designed as a distributed system composed of:
 - **PR 13: Container Executor & Sandboxed Job Execution (Completed)**: Pluggable `Executor` abstraction and production-oriented `DockerExecutor` (`@forge/executor`), ephemeral workspaces, non-root execution (`--user 1000:1000`), container isolation (no privileged, no Docker socket, bridge network), CPU/memory resource enforcement, wall-clock timeout supervision (`docker stop` -> `docker kill`), bounded stdout/stderr capture with truncation protection, worker lease synchronization with split-brain abort protection, and transactional PostgreSQL persistence.
 - **PR 14: Retry Policies, Exponential Backoff & Attempt Orchestration (Completed)**: Deterministic retry policies (`RetryPolicy`, `BackoffPolicy`, `evaluateRetry`), bounded exponential backoff with overflow protection, attempt immutability with collision-safe database uniqueness (`job_id, attempt_number`), durable PostgreSQL backoff scheduling (`jobs.next_attempt_at` and partial index `idx_jobs_retry_schedulable`), worker lease isolation enabling worker hopping, and non-blocking backoff scheduling.
 - **PR 15: Dead-Letter Queue, Worker Loss Recovery & Graceful Shutdown (Completed)**: Decoupled Redis heartbeat liveness from PostgreSQL lease authority, atomic lease recovery with row-level locking (`FOR UPDATE SKIP LOCKED`), attempt historical immutability (`WORKER_LOST`), terminal job protection, Dead-Letter Queue (`dead_letter_jobs`) with unique constraint and idempotent upserts, three-phase worker shutdown lifecycle (`READY -> DRAINING -> OFFLINE`), bounded drain waiting with in-flight task supervision, and exclusion of draining workers from candidate placement.
+- **PR 16: Fairness, Queue Aging & Starvation Prevention (Completed)**: Bounded queue aging model (`effective_priority = base_priority + age_bonus`), monotonic bounded aging bonus (`min(max_bonus, floor(waiting / interval) * step)`), retried job backoff-eligibility preservation (`nextAttemptAt`), zero mutation of durable base priority, deterministic alphanumeric tie-breaking, and empirical starvation prevention verification.
+- **PR 17: Scheduler Benchmarking & Performance Validation (Completed)**: Reproducible scheduler benchmarking system (`benchmarks/scheduler`), micro/component/system test suites, high-resolution statistical distributions (P50, P95, P99), pure placement vs PostgreSQL lease contention profiling, query execution plan verification (`EXPLAIN (ANALYZE, BUFFERS)`), and baseline performance specification (`docs/benchmarks/scheduler-baseline.md`).
 
 ---
 
@@ -64,6 +66,7 @@ Forge V2 is designed as a distributed system composed of:
 - **[Retry Policies, Backoff & Attempt Orchestration Specification](retry.md)**
 - **[Reliability, Worker Loss Recovery & Graceful Shutdown Specification](reliability.md)**
 - **[Fairness, Queue Aging & Starvation Prevention Specification](fairness.md)**
+- **[Scheduler Baseline Performance Specification](../benchmarks/scheduler-baseline.md)**
 - **[Architecture Glossary](glossary.md)**
 - **[Architectural Invariants Catalog](invariants.md)**
 - **[Service Boundaries Specification](boundaries.md)**
