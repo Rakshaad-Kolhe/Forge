@@ -64,8 +64,15 @@ export class HighestPriorityFirstPolicy implements JobOrderingPolicy {
   public readonly name = 'HighestPriorityFirst';
 
   public orderJobs<
-    T extends { readonly priority?: number; readonly id?: string; readonly jobId?: string },
-  >(jobs: readonly T[]): T[] {
+    T extends {
+      readonly priority?: number;
+      readonly id?: string;
+      readonly jobId?: string;
+      readonly createdAt?: Date | string;
+      readonly queuedAt?: Date | string;
+      readonly nextAttemptAt?: Date | string;
+    },
+  >(jobs: readonly T[], _now?: Date): T[] {
     return orderJobsByPriority(jobs);
   }
 }
@@ -74,3 +81,13 @@ export class HighestPriorityFirstPolicy implements JobOrderingPolicy {
  * Singleton instance of HighestPriorityFirstPolicy.
  */
 export const highestPriorityFirstPolicy = new HighestPriorityFirstPolicy();
+
+export {
+  calculateAgeBonus,
+  calculateEffectivePriority,
+  compareFairAgingPriority,
+  fairAgingPriorityPolicy,
+  FairAgingPriorityPolicy,
+  getJobEligibleWaitingSince,
+  orderJobsWithFairAging,
+} from './fairness-policy.js';

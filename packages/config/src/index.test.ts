@@ -23,6 +23,9 @@ describe('loadConfig', () => {
       maxJobAttempts: 10,
       defaultRetryBaseDelayMs: 1000,
       maxRetryBackoffMs: 3600000,
+      fairnessAgingIntervalMs: 60000,
+      fairnessAgeBonusStep: 10,
+      fairnessMaxAgeBonus: 500,
     });
   });
 
@@ -46,6 +49,9 @@ describe('loadConfig', () => {
       MAX_JOB_ATTEMPTS: '20',
       DEFAULT_RETRY_BASE_DELAY_MS: '2000',
       MAX_RETRY_BACKOFF_MS: '1800000',
+      FAIRNESS_AGING_INTERVAL_MS: '30000',
+      FAIRNESS_AGE_BONUS_STEP: '25',
+      FAIRNESS_MAX_AGE_BONUS: '1000',
     });
     expect(config).toEqual({
       nodeEnv: 'production',
@@ -66,6 +72,9 @@ describe('loadConfig', () => {
       maxJobAttempts: 20,
       defaultRetryBaseDelayMs: 2000,
       maxRetryBackoffMs: 1800000,
+      fairnessAgingIntervalMs: 30000,
+      fairnessAgeBonusStep: 25,
+      fairnessMaxAgeBonus: 1000,
     });
   });
 
@@ -148,6 +157,39 @@ describe('loadConfig', () => {
       loadConfig({
         DEFAULT_RETRY_BASE_DELAY_MS: '5000',
         MAX_RETRY_BACKOFF_MS: '2000',
+      });
+    }).toThrow(ConfigValidationError);
+  });
+
+  it('fails clearly when FAIRNESS_AGING_INTERVAL_MS is less than minimum', () => {
+    expect(() => {
+      loadConfig({
+        FAIRNESS_AGING_INTERVAL_MS: '500', // < 1000ms
+      });
+    }).toThrow(ConfigValidationError);
+  });
+
+  it('fails clearly when FAIRNESS_AGE_BONUS_STEP is less than 1', () => {
+    expect(() => {
+      loadConfig({
+        FAIRNESS_AGE_BONUS_STEP: '0',
+      });
+    }).toThrow(ConfigValidationError);
+  });
+
+  it('fails clearly when FAIRNESS_MAX_AGE_BONUS exceeds limit', () => {
+    expect(() => {
+      loadConfig({
+        FAIRNESS_MAX_AGE_BONUS: '3000', // > 2000
+      });
+    }).toThrow(ConfigValidationError);
+  });
+
+  it('fails clearly when FAIRNESS_MAX_AGE_BONUS is less than FAIRNESS_AGE_BONUS_STEP', () => {
+    expect(() => {
+      loadConfig({
+        FAIRNESS_AGE_BONUS_STEP: '100',
+        FAIRNESS_MAX_AGE_BONUS: '50',
       });
     }).toThrow(ConfigValidationError);
   });

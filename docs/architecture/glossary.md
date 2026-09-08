@@ -179,3 +179,23 @@ The structured shutdown process whereby a worker enters the `DRAINING` state, im
 ### DRAINING State
 
 An intermediate operational status in the worker lifecycle (`READY -> DRAINING -> OFFLINE`) signaling to schedulers and internal dispatchers that the node is completing active tasks and must not be allocated new work.
+
+### Queue Aging
+
+The scheduling mechanism whereby older queued jobs dynamically accumulate scheduling weight proportional to their waiting duration to prevent starvation under sustained higher-priority load.
+
+### Effective Priority
+
+The transient, dynamic priority calculated by the scheduler for candidate job ordering: $\text{effectivePriority} = \text{basePriority} + \text{ageBonus}$. Stored base priority remains immutable; effective priority is derived dynamically without database persistence.
+
+### Age Bonus
+
+A bounded, step-wise integer addition to base priority: $\min\left(\text{maxAgeBonus}, \left\lfloor\frac{\text{waitingMs}}{\text{agingIntervalMs}}\right\rfloor \times \text{ageBonusStep}\right)$. Ceiled by $\text{maxAgeBonus}$ to guarantee that low-priority work can never overtake critical or emergency priority tiers.
+
+### Starvation Prevention
+
+The algorithmic guarantee that no eligible, schedulable job can be bypassed indefinitely by a continuous stream of higher-priority work, achieved via bounded queue aging.
+
+### Retry Fairness Age Reset
+
+The invariant dictating that when a failed job becomes eligible for retry scheduling, its waiting duration resets to start at `jobs.next_attempt_at` rather than its initial creation time (`jobs.created_at`), preventing retried jobs from unfairly amassing excessive queue age during backoff.

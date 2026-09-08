@@ -102,6 +102,8 @@ export interface JobSerialized {
   priority: number;
   retryPolicy?: RetryPolicy;
   nextAttemptAt?: string;
+  createdAt?: string;
+  queuedAt?: string;
   status: JobStatus;
   attempts: JobAttemptSerialized[];
 }

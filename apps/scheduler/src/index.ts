@@ -5,6 +5,7 @@ export * from './types.js';
 export * from './errors.js';
 export * from './policy.js';
 export * from './job-policy.js';
+export * from './fairness-policy.js';
 export * from './scheduler.js';
 
 export interface SchedulerShell {

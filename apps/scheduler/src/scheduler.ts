@@ -229,15 +229,17 @@ export function evaluatePrioritizedWork(
   jobPolicy: JobOrderingPolicy = highestPriorityFirstPolicy,
   workerPolicy: WorkerSelectionPolicy = deterministicFirstEligiblePolicy,
   matcher: EligibilityMatcher = filterEligibleWorkers,
+  now?: Date,
 ): PrioritizedScheduleResult {
-  const orderedJobs = jobPolicy.orderJobs(jobs);
+  const effectiveNow = now ?? new Date();
+  const orderedJobs = jobPolicy.orderJobs(jobs, effectiveNow);
 
   const orderedDecisions: ScheduleDecision[] = [];
   const scheduledDecisions: ScheduledDecision[] = [];
   const unschedulableDecisions: UnschedulableDecision[] = [];
 
   for (const job of orderedJobs) {
-    const decision = evaluatePlacement(job, candidates, workerPolicy, matcher);
+    const decision = evaluatePlacement(job, candidates, workerPolicy, matcher, effectiveNow);
     orderedDecisions.push(decision);
 
     if (decision.status === 'SCHEDULED') {
@@ -303,7 +305,7 @@ export class ForgeScheduler implements Scheduler {
    * If an eligible worker is selected and a leaseRepository is configured, atomically claims
    * a time-bounded distributed worker lease.
    */
-  public async schedule(jobOrId: Job | string): Promise<ScheduleDecision> {
+  public async schedule(jobOrId: Job | string, now?: Date): Promise<ScheduleDecision> {
     let job: Job;
 
     if (typeof jobOrId === 'string') {
@@ -347,7 +349,14 @@ export class ForgeScheduler implements Scheduler {
       candidates = [];
     }
 
-    const decision = evaluatePlacement(job, candidates, this.selectionPolicy, this.matcher);
+    const effectiveNow = now ?? new Date();
+    const decision = evaluatePlacement(
+      job,
+      candidates,
+      this.selectionPolicy,
+      this.matcher,
+      effectiveNow,
+    );
 
     let finalDecision: ScheduleDecision = decision;
     if (decision.status === 'SCHEDULED' && this.leaseRepository) {
@@ -378,6 +387,7 @@ export class ForgeScheduler implements Scheduler {
    */
   public async schedulePrioritized(
     jobsOrIds: readonly (Job | string)[],
+    now?: Date,
   ): Promise<PrioritizedScheduleResult> {
     const jobs: Job[] = [];
 
@@ -427,6 +437,7 @@ export class ForgeScheduler implements Scheduler {
       this.jobPolicy,
       this.selectionPolicy,
       this.matcher,
+      now,
     );
 
     let result = baseResult;
@@ -501,7 +512,7 @@ export class ForgeScheduler implements Scheduler {
       };
     }
 
-    const result = await this.schedulePrioritized(dueJobs);
+    const result = await this.schedulePrioritized(dueJobs, options?.now);
     return {
       ...result,
       processedCount: result.orderedDecisions.length,
@@ -609,7 +620,7 @@ export class ForgeScheduler implements Scheduler {
   public async scheduleNextBatch(
     queue: JobQueue,
     batchSize: number,
-    options?: { visibilityTimeoutSeconds?: number },
+    options?: { visibilityTimeoutSeconds?: number; now?: Date },
   ): Promise<{ deliveries: readonly QueueDelivery[]; result: PrioritizedScheduleResult }> {
     const deliveries: QueueDelivery[] = [];
 
@@ -679,6 +690,7 @@ export class ForgeScheduler implements Scheduler {
       this.jobPolicy,
       this.selectionPolicy,
       this.matcher,
+      options?.now,
     );
 
     return {

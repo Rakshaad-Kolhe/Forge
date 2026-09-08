@@ -101,3 +101,14 @@ This document establishes the binding architectural invariants for Forge V2. The
 4. **Terminal Job Protection**: Jobs in a terminal state (`SUCCEEDED`, `FAILED`, `CANCELLED`, `TIMED_OUT`) must never be resurrected to `QUEUED` during lease recovery. If an operator cancelled a job while the worker was lost, the lease is marked `EXPIRED` and the job status remains unchanged.
 5. **Dead-Letter Queue (DLQ) Durability & Idempotency**: Jobs with exhausted retries or non-retryable failures must be durably recorded in `dead_letter_jobs` with structured reason taxonomy. The database unique constraint `UNIQUE(job_id)` combined with idempotent upserts prevents duplicate DLQ records under at-least-once recovery loops.
 6. **Graceful Worker Drain Precedence**: A worker entering `DRAINING` status must immediately reject new job claims (`NOT_CLAIMABLE`) and direct execution requests, while maintaining heartbeats with status `DRAINING` to ensure exclusion from scheduler candidate placement. In-flight tasks must be given a bounded grace period (`drainTimeoutMs`) to finish and release leases before final deregistration and transition to `OFFLINE`.
+
+---
+
+## 10. Queue Aging, Fairness & Starvation Prevention
+
+1. **Base Priority Immutability**: Base priority (`job.priority`) is a durable, immutable property of the job. It must never be mutated or overwritten by queue aging, fairness calculations, or scheduler passes.
+2. **Zero Database Migrations for Transient Signals**: Effective priority is a dynamic scheduler-derived calculation and must not be persisted to PostgreSQL or Redis. Waiting timestamps are derived exclusively from authoritative timestamps: `jobs.created_at` (initial attempt) and `jobs.next_attempt_at` (retried attempts).
+3. **Bounded Age Bonus Ceiling**: Age bonus is strictly bounded by `maxAgeBonus` ($\text{effective\_priority} \le \text{base\_priority} + \text{max\_age\_bonus}$). Queue aging must never allow low-priority work to overtake critical or emergency priority bands whose base priority exceeds the ceiling.
+4. **Retry Age Reset Invariant**: When a job enters retry scheduling, its waiting duration resets to start at `jobs.next_attempt_at` (the exact instant the retry backoff delay expired and the job became eligible for placement). Retried jobs must never inherit or carry over queue aging accumulated prior to failure or during backoff sleep.
+5. **Deterministic Tie-Breaking & Permutation Invariance**: Job ordering under queue aging must break ties strictly by alphanumeric `jobId` ascending code-point ordering. The ordering must be permutation-invariant and time-deterministic for any fixed evaluation instant `now`.
+6. **Hard Safety Gates Preserved**: Queue aging governs candidate job evaluation order only. It must never bypass, weaken, or alter PR 09 capability/resource matching, PR 10 deterministic worker selection, PR 12 distributed worker leases, or PR 14 active backoff gates.
