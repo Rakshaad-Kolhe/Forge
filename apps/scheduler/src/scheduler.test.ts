@@ -686,6 +686,283 @@ describe('Scheduler — evaluatePrioritizedWork & schedulePrioritized', () => {
       expect(prioritizedResult.scheduledDecisions[1]?.lease?.id).toBe(`lease-${jobLowEligible.id}`);
       expect(mockLeaseRepo.claim).toHaveBeenCalledTimes(2);
     });
+
+    it('claims leases in schedulePrioritized using claimBatch when available', async () => {
+      const mockBatchResult = {
+        results: [
+          {
+            jobId: jobMediumEligible.id,
+            workerId: 'worker-normal',
+            status: 'ACQUIRED' as const,
+            lease: {
+              id: `lease-${jobMediumEligible.id}`,
+              jobId: jobMediumEligible.id,
+              workerId: 'worker-normal',
+              status: 'ACTIVE' as const,
+              durationMs: 30000,
+              acquiredAt: new Date(),
+              renewedAt: new Date(),
+              expiresAt: new Date(Date.now() + 30000),
+              createdAt: new Date(),
+            },
+          },
+          {
+            jobId: jobLowEligible.id,
+            workerId: 'worker-normal',
+            status: 'ACQUIRED' as const,
+            lease: {
+              id: `lease-${jobLowEligible.id}`,
+              jobId: jobLowEligible.id,
+              workerId: 'worker-normal',
+              status: 'ACTIVE' as const,
+              durationMs: 30000,
+              acquiredAt: new Date(),
+              renewedAt: new Date(),
+              expiresAt: new Date(Date.now() + 30000),
+              createdAt: new Date(),
+            },
+          },
+        ],
+        acquiredCount: 2,
+        conflictCount: 0,
+        notClaimableCount: 0,
+      };
+
+      const mockLeaseRepo = {
+        claim: vi.fn(),
+        claimBatch: vi.fn().mockResolvedValue(mockBatchResult),
+        renew: vi.fn(),
+        release: vi.fn(),
+        findActiveByJobId: vi.fn(),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      const scheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([workerNormal]) },
+        leaseRepository: mockLeaseRepo,
+      });
+
+      const prioritizedResult = await scheduler.schedulePrioritized([
+        jobMediumEligible,
+        jobLowEligible,
+      ]);
+
+      expect(prioritizedResult.scheduledDecisions).toHaveLength(2);
+      expect(mockLeaseRepo.claimBatch).toHaveBeenCalledTimes(1);
+      expect(mockLeaseRepo.claim).not.toHaveBeenCalled();
+      expect(prioritizedResult.scheduledDecisions[0]?.lease?.id).toBe(
+        `lease-${jobMediumEligible.id}`,
+      );
+      expect(prioritizedResult.scheduledDecisions[1]?.lease?.id).toBe(`lease-${jobLowEligible.id}`);
+    });
+
+    it('chunks batched lease claims according to leaseBatchSize', async () => {
+      const mockLeaseRepo = {
+        claim: vi.fn(),
+        claimBatch: vi
+          .fn()
+          .mockImplementation((opts: { items: { jobId: string; workerId: string }[] }) =>
+            Promise.resolve({
+              results: opts.items.map((it) => ({
+                jobId: it.jobId,
+                workerId: it.workerId,
+                status: 'ACQUIRED' as const,
+                lease: {
+                  id: `lease-${it.jobId}`,
+                  jobId: it.jobId,
+                  workerId: it.workerId,
+                  status: 'ACTIVE' as const,
+                  durationMs: 30000,
+                  acquiredAt: new Date(),
+                  renewedAt: new Date(),
+                  expiresAt: new Date(Date.now() + 30000),
+                  createdAt: new Date(),
+                },
+              })),
+              acquiredCount: opts.items.length,
+              conflictCount: 0,
+              notClaimableCount: 0,
+            }),
+          ),
+        renew: vi.fn(),
+        release: vi.fn(),
+        findActiveByJobId: vi.fn(),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      // 5 jobs with leaseBatchSize: 2 -> 3 batch calls (2, 2, 1)
+      const scheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([workerNormal]) },
+        leaseRepository: mockLeaseRepo,
+        leaseBatchSize: 2,
+      });
+
+      const jobs = [
+        jobMediumEligible,
+        jobLowEligible,
+        new Job({
+          id: createJobId('job-extra-1'),
+          pipelineRunId: createPipelineRunId('run-batch'),
+          stepName: 'med-task',
+          command: 'echo med',
+          priority: 100,
+          requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+        }),
+        new Job({
+          id: createJobId('job-extra-2'),
+          pipelineRunId: createPipelineRunId('run-batch'),
+          stepName: 'med-task',
+          command: 'echo med',
+          priority: 100,
+          requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+        }),
+        new Job({
+          id: createJobId('job-extra-3'),
+          pipelineRunId: createPipelineRunId('run-batch'),
+          stepName: 'med-task',
+          command: 'echo med',
+          priority: 100,
+          requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+        }),
+      ];
+
+      const res = await scheduler.schedulePrioritized(jobs);
+      expect(res.scheduledDecisions).toHaveLength(5);
+      expect(mockLeaseRepo.claimBatch).toHaveBeenCalledTimes(3);
+    });
+
+    it('preserves exact semantic equivalence between batched and sequential claiming paths under partial conflicts', async () => {
+      const conflictJob = new Job({
+        id: createJobId('job-conflict'),
+        pipelineRunId: createPipelineRunId('run-batch'),
+        stepName: 'med-task',
+        command: 'echo med',
+        priority: 100,
+        requirements: { executor: 'docker', cpuCores: 2, memoryBytes: 4096 },
+      });
+      const jobs = [jobMediumEligible, conflictJob, jobLowEligible];
+
+      // Sequential mock
+      const seqLeaseRepo = {
+        claim: vi.fn().mockImplementation((opts: { jobId: string; workerId: string }) => {
+          if (opts.jobId === 'job-conflict') {
+            return Promise.resolve({
+              status: 'CONFLICT',
+              reason: 'LEASE_ALREADY_HELD',
+              currentOwnerId: 'worker-other',
+              expiresAt: new Date('2026-09-08T15:00:00Z'),
+            });
+          }
+          return Promise.resolve({
+            status: 'ACQUIRED',
+            lease: {
+              id: `lease-${opts.jobId}`,
+              jobId: opts.jobId,
+              workerId: opts.workerId,
+              status: 'ACTIVE' as const,
+              durationMs: 30000,
+              acquiredAt: new Date('2026-09-08T14:00:00Z'),
+              renewedAt: new Date('2026-09-08T14:00:00Z'),
+              expiresAt: new Date('2026-09-08T14:00:30Z'),
+              createdAt: new Date('2026-09-08T14:00:00Z'),
+            },
+          });
+        }),
+        renew: vi.fn(),
+        release: vi.fn(),
+        findActiveByJobId: vi.fn(),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      // Batched mock
+      const batchedLeaseRepo = {
+        claim: vi.fn(),
+        claimBatch: vi
+          .fn()
+          .mockImplementation((opts: { items: { jobId: string; workerId: string }[] }) => {
+            return Promise.resolve({
+              results: opts.items.map((it) => {
+                if (it.jobId === 'job-conflict') {
+                  return {
+                    jobId: it.jobId,
+                    workerId: it.workerId,
+                    status: 'CONFLICT' as const,
+                    reason: 'LEASE_ALREADY_HELD' as const,
+                    currentOwnerId: 'worker-other',
+                    expiresAt: new Date('2026-09-08T15:00:00Z'),
+                  };
+                }
+                return {
+                  jobId: it.jobId,
+                  workerId: it.workerId,
+                  status: 'ACQUIRED' as const,
+                  lease: {
+                    id: `lease-${it.jobId}`,
+                    jobId: it.jobId,
+                    workerId: it.workerId,
+                    status: 'ACTIVE' as const,
+                    durationMs: 30000,
+                    acquiredAt: new Date('2026-09-08T14:00:00Z'),
+                    renewedAt: new Date('2026-09-08T14:00:00Z'),
+                    expiresAt: new Date('2026-09-08T14:00:30Z'),
+                    createdAt: new Date('2026-09-08T14:00:00Z'),
+                  },
+                };
+              }),
+              acquiredCount: 2,
+              conflictCount: 1,
+              notClaimableCount: 0,
+            });
+          }),
+        renew: vi.fn(),
+        release: vi.fn(),
+        findActiveByJobId: vi.fn(),
+        findById: vi.fn(),
+        findByWorkerId: vi.fn(),
+        reclaimExpiredLeases: vi.fn(),
+      };
+
+      const seqScheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([workerNormal]) },
+        leaseRepository: seqLeaseRepo,
+      });
+
+      const batchScheduler = new ForgeScheduler({
+        workerSource: { listWorkers: vi.fn().mockResolvedValue([workerNormal]) },
+        leaseRepository: batchedLeaseRepo,
+      });
+
+      const seqResult = await seqScheduler.schedulePrioritized(jobs);
+      const batchResult = await batchScheduler.schedulePrioritized(jobs);
+
+      // Verify exact semantic equivalence
+      expect(batchResult.orderedDecisions.length).toBe(seqResult.orderedDecisions.length);
+      expect(batchResult.scheduledDecisions.length).toBe(seqResult.scheduledDecisions.length);
+      expect(batchResult.unschedulableDecisions.length).toBe(
+        seqResult.unschedulableDecisions.length,
+      );
+
+      for (let i = 0; i < seqResult.orderedDecisions.length; i++) {
+        const seqDec = seqResult.orderedDecisions[i]!;
+        const batchDec = batchResult.orderedDecisions[i]!;
+
+        expect(batchDec.status).toBe(seqDec.status);
+        expect(batchDec.jobId).toBe(seqDec.jobId);
+        if (seqDec.status === 'SCHEDULED' && batchDec.status === 'SCHEDULED') {
+          expect(batchDec.workerId).toBe(seqDec.workerId);
+          expect(batchDec.lease?.id).toBe(seqDec.lease?.id);
+        } else if (seqDec.status === 'UNSCHEDULABLE' && batchDec.status === 'UNSCHEDULABLE') {
+          expect(batchDec.reason).toBe(seqDec.reason);
+          expect(batchDec.failureReasons).toEqual(seqDec.failureReasons);
+        }
+      }
+    });
   });
 
   describe('Scheduler — Retry Backoff Awareness', () => {

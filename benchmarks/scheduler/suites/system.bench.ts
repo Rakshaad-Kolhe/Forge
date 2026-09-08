@@ -131,15 +131,72 @@ export async function runSystemBenchmarks(): Promise<BenchmarkRunResult[]> {
       leaseDurationMs: 60000,
     });
 
-    // Test persistent batch scheduling for sizes 10, 25, 50
+    const sequentialLeaseRepo = {
+      claim: (opts: Parameters<typeof leaseRepo.claim>[0]) => leaseRepo.claim(opts),
+      renew: (opts: Parameters<typeof leaseRepo.renew>[0]) => leaseRepo.renew(opts),
+      release: (opts: Parameters<typeof leaseRepo.release>[0]) => leaseRepo.release(opts),
+      findActiveByJobId: (id: string) => leaseRepo.findActiveByJobId(id),
+      findById: (id: string) => leaseRepo.findById(id),
+      findByWorkerId: (wId: string) => leaseRepo.findByWorkerId(wId),
+      reclaimExpiredLeases: () => leaseRepo.reclaimExpiredLeases(),
+    };
+
+    const sequentialScheduler = new ForgeScheduler({
+      workerSource: staticWorkerSource,
+      leaseRepository: sequentialLeaseRepo,
+      leaseDurationMs: 60000,
+    });
+
+    // Test persistent batch scheduling for sizes 10, 25, 50: Sequential vs Batched
     for (const batchSize of [10, 25, 50]) {
+      // 1. Sequential baseline
+      results.push(
+        await runBenchmark({
+          name: `system:persistent:schedulePrioritized:sequential (batch=${batchSize}, workers=10)`,
+          warmupIterations: 2,
+          measuredIterations: Math.min(measured, 10),
+          beforeIteration: async (iter) => {
+            for (let i = 0; i < batchSize; i++) {
+              const jId = createJobId(`${prefix}seq-b${batchSize}-i${iter}-j${i}`);
+              await jobRepo.save(
+                new Job({
+                  id: jId,
+                  pipelineRunId: runId,
+                  stepName: `step-${i}`,
+                  command: 'echo test',
+                  priority: 50 + (i % 20),
+                  initialStatus: 'QUEUED',
+                }),
+              );
+            }
+          },
+          fn: async (iter) => {
+            const batchJobs: Job[] = [];
+            for (let i = 0; i < batchSize; i++) {
+              const jId = createJobId(`${prefix}seq-b${batchSize}-i${iter}-j${i}`);
+              const job = await jobRepo.findById(jId);
+              if (job) batchJobs.push(job);
+            }
+            return await sequentialScheduler.schedulePrioritized(batchJobs);
+          },
+          afterIteration: async (iter) => {
+            await pool!.query('DELETE FROM worker_leases WHERE job_id LIKE $1', [
+              `${prefix}seq-b${batchSize}-i${iter}-%`,
+            ]);
+            await pool!.query('DELETE FROM jobs WHERE id LIKE $1', [
+              `${prefix}seq-b${batchSize}-i${iter}-%`,
+            ]);
+          },
+        }),
+      );
+
+      // 2. Batched optimized (PR 18)
       results.push(
         await runBenchmark({
           name: `system:persistent:schedulePrioritized (batch=${batchSize}, workers=10)`,
           warmupIterations: 2,
           measuredIterations: Math.min(measured, 10),
           beforeIteration: async (iter) => {
-            // Re-seed jobs for this iteration
             for (let i = 0; i < batchSize; i++) {
               const jId = createJobId(`${prefix}b${batchSize}-i${iter}-j${i}`);
               await jobRepo.save(
@@ -164,7 +221,6 @@ export async function runSystemBenchmarks(): Promise<BenchmarkRunResult[]> {
             return await persistentScheduler.schedulePrioritized(batchJobs);
           },
           afterIteration: async (iter) => {
-            // Clean up leases and jobs created in this iteration
             await pool!.query('DELETE FROM worker_leases WHERE job_id LIKE $1', [
               `${prefix}b${batchSize}-i${iter}-%`,
             ]);

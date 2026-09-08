@@ -273,6 +273,87 @@ export async function runComponentBenchmarks(): Promise<BenchmarkRunResult[]> {
       workerId: 'worker-prime',
     });
 
+    // --------------------------------------------------------------------------
+    // 4. Batched Worker Lease Acquisition (PR 18 Optimization)
+    // --------------------------------------------------------------------------
+    for (const batchSize of [10, 25, 50]) {
+      results.push(
+        await runBenchmark({
+          name: `component:lease:claimBatch (batch=${batchSize})`,
+          warmupIterations: 2,
+          measuredIterations: Math.min(measured, 10),
+          beforeIteration: async (iter) => {
+            for (let i = 0; i < batchSize; i++) {
+              const jId = createJobId(`${prefix}batch-b${batchSize}-i${iter}-j${i}`);
+              await jobRepo.save(
+                new Job({
+                  id: jId,
+                  pipelineRunId: runId,
+                  stepName: `step-batch-${i}`,
+                  command: 'echo test',
+                  priority: 50,
+                  initialStatus: 'QUEUED',
+                }),
+              );
+            }
+          },
+          fn: async (iter) => {
+            const items = Array.from({ length: batchSize }, (_, i) => ({
+              jobId: `${prefix}batch-b${batchSize}-i${iter}-j${i}`,
+              workerId: `worker-batch-${i % 5}`,
+              durationMs: 30000,
+            }));
+            return await leaseRepo.claimBatch({ items });
+          },
+          afterIteration: async (iter) => {
+            await pool!.query('DELETE FROM worker_leases WHERE job_id LIKE $1', [
+              `${prefix}batch-b${batchSize}-i${iter}-%`,
+            ]);
+            await pool!.query('DELETE FROM jobs WHERE id LIKE $1', [
+              `${prefix}batch-b${batchSize}-i${iter}-%`,
+            ]);
+          },
+        }),
+      );
+    }
+
+    // Contended claimBatch (all jobs actively leased to other workers)
+    const conflictBatchSize = 25;
+    for (let i = 0; i < conflictBatchSize; i++) {
+      const jId = createJobId(`${prefix}conflict-batch-j${i}`);
+      await jobRepo.save(
+        new Job({
+          id: jId,
+          pipelineRunId: runId,
+          stepName: `step-conflict-${i}`,
+          command: 'echo test',
+          priority: 50,
+          initialStatus: 'QUEUED',
+        }),
+      );
+      await leaseRepo.claim({
+        jobId: jId,
+        workerId: 'worker-primary-holder',
+        durationMs: 60000,
+      });
+    }
+
+    results.push(
+      await runBenchmark({
+        name: `component:lease:claimBatch (contended conflict, batch=${conflictBatchSize})`,
+        warmupIterations: 2,
+        measuredIterations: Math.min(measured, 10),
+        fn: async (iter) => {
+          const items = Array.from({ length: conflictBatchSize }, (_, i) => ({
+            jobId: `${prefix}conflict-batch-j${i}`,
+            workerId: `worker-contender-${iter}-${i}`,
+            durationMs: 30000,
+          }));
+          return await leaseRepo.claimBatch({ items });
+        },
+      }),
+    );
+
     // Clean up DB records
     await pool.query('DELETE FROM worker_leases WHERE job_id LIKE $1', [`${prefix}%`]);
     await pool.query('DELETE FROM jobs WHERE id LIKE $1', [`${prefix}%`]);

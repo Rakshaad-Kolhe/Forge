@@ -42,6 +42,7 @@ Forge V2 is designed as a distributed system composed of:
 - **PR 15: Dead-Letter Queue, Worker Loss Recovery & Graceful Shutdown (Completed)**: Decoupled Redis heartbeat liveness from PostgreSQL lease authority, atomic lease recovery with row-level locking (`FOR UPDATE SKIP LOCKED`), attempt historical immutability (`WORKER_LOST`), terminal job protection, Dead-Letter Queue (`dead_letter_jobs`) with unique constraint and idempotent upserts, three-phase worker shutdown lifecycle (`READY -> DRAINING -> OFFLINE`), bounded drain waiting with in-flight task supervision, and exclusion of draining workers from candidate placement.
 - **PR 16: Fairness, Queue Aging & Starvation Prevention (Completed)**: Bounded queue aging model (`effective_priority = base_priority + age_bonus`), monotonic bounded aging bonus (`min(max_bonus, floor(waiting / interval) * step)`), retried job backoff-eligibility preservation (`nextAttemptAt`), zero mutation of durable base priority, deterministic alphanumeric tie-breaking, and empirical starvation prevention verification.
 - **PR 17: Scheduler Benchmarking & Performance Validation (Completed)**: Reproducible scheduler benchmarking system (`benchmarks/scheduler`), micro/component/system test suites, high-resolution statistical distributions (P50, P95, P99), pure placement vs PostgreSQL lease contention profiling, query execution plan verification (`EXPLAIN (ANALYZE, BUFFERS)`), and baseline performance specification (`docs/benchmarks/scheduler-baseline.md`).
+- **PR 18: Batched Worker Lease Claiming & Persistent Scheduler Optimization (Completed)**: Single-transaction multi-job lease acquisition (`claimBatch`), canonical ascending ID row locking (`ORDER BY id ASC FOR UPDATE`) for deadlock-free concurrency, bulk unnest multi-row insert, bounded batch chunking (`DEFAULT_LEASE_BATCH_SIZE = 50`), empirical 5.8x persistent throughput improvement (from ~70 to ~600+ jobs/sec leased), and 100% semantic equivalence verification.
 
 ---
 
@@ -106,5 +107,9 @@ PR 01: Repository Foundation & Architecture Contract (Completed)
   │
   ├──► PR 15: Dead-Letter Queue, Worker Loss Recovery & Graceful Shutdown (Completed)
   │
-  └──► PR 16: Fairness, Queue Aging & Starvation Prevention (Current)
+  ├──► PR 16: Fairness, Queue Aging & Starvation Prevention (Completed)
+  │
+  ├──► PR 17: Scheduler Benchmarking & Performance Validation (Completed)
+  │
+  └──► PR 18: Batched Worker Lease Claiming & Persistent Optimization (Current)
 ```

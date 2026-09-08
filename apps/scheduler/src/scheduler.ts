@@ -1,5 +1,6 @@
 import {
   DEFAULT_JOB_PRIORITY,
+  DEFAULT_LEASE_BATCH_SIZE,
   type JobRequirements,
   type LeaseRecoveryOptions,
   type RecoverExpiredLeasesResult,
@@ -283,6 +284,7 @@ export class ForgeScheduler implements Scheduler {
   private readonly matcher: EligibilityMatcher;
   private readonly leaseRepository?: WorkerLeaseRepository;
   private readonly leaseDurationMs: number;
+  private readonly leaseBatchSize: number;
   private readonly recoveryService?: LeaseRecoveryService;
   private readonly logger?: Logger;
   private recoveryTimer?: NodeJS.Timeout;
@@ -296,6 +298,7 @@ export class ForgeScheduler implements Scheduler {
     this.matcher = options?.matcher ?? filterEligibleWorkers;
     this.leaseRepository = options?.leaseRepository;
     this.leaseDurationMs = options?.leaseDurationMs ?? 30000;
+    this.leaseBatchSize = options?.leaseBatchSize ?? DEFAULT_LEASE_BATCH_SIZE;
     this.recoveryService = options?.recoveryService;
     this.logger = options?.logger;
   }
@@ -446,17 +449,106 @@ export class ForgeScheduler implements Scheduler {
       const finalScheduled: ScheduledDecision[] = [];
       const finalUnschedulable: UnschedulableDecision[] = [...baseResult.unschedulableDecisions];
 
-      for (const dec of baseResult.orderedDecisions) {
-        if (dec.status === 'SCHEDULED') {
-          const finalDec = await this.claimLeaseForDecision(dec);
-          finalOrdered.push(finalDec);
-          if (finalDec.status === 'SCHEDULED') {
-            finalScheduled.push(finalDec);
-          } else {
-            finalUnschedulable.push(finalDec);
+      if (typeof this.leaseRepository.claimBatch === 'function') {
+        const scheduledToClaim = baseResult.orderedDecisions.filter(
+          (d): d is ScheduledDecision => d.status === 'SCHEDULED',
+        );
+
+        const decisionMap = new Map<string, ScheduleDecision>();
+
+        for (let i = 0; i < scheduledToClaim.length; i += this.leaseBatchSize) {
+          const chunk = scheduledToClaim.slice(i, i + this.leaseBatchSize);
+          const batchResult = await this.leaseRepository.claimBatch({
+            items: chunk.map((dec) => ({
+              jobId: dec.jobId,
+              workerId: dec.workerId,
+              durationMs: this.leaseDurationMs,
+            })),
+          });
+
+          for (let c = 0; c < chunk.length; c++) {
+            const dec = chunk[c]!;
+            const itemRes = batchResult.results[c];
+
+            if (itemRes && itemRes.status === 'ACQUIRED') {
+              const decisionWithLease: ScheduledDecision = {
+                ...dec,
+                lease: itemRes.lease,
+              };
+              this.logger?.info('Scheduler placed job and acquired worker lease', {
+                jobId: dec.jobId,
+                workerId: dec.workerId,
+                leaseId: itemRes.lease.id,
+                expiresAt: itemRes.lease.expiresAt,
+              });
+              decisionMap.set(dec.jobId, decisionWithLease);
+            } else if (itemRes && itemRes.status === 'CONFLICT') {
+              const unschedulable: UnschedulableDecision = {
+                status: 'UNSCHEDULABLE',
+                jobId: dec.jobId,
+                candidateWorkerCount: dec.candidateWorkerCount,
+                eligibleWorkerCount: dec.eligibleWorkerCount,
+                priority: dec.priority,
+                reason: 'LEASE_CONFLICT',
+                failureReasons: Object.freeze([
+                  `Active lease already held by worker "${itemRes.currentOwnerId}" until ${itemRes.expiresAt.toISOString()}`,
+                ]),
+              };
+              this.logger?.warn('Scheduler placement failed due to active lease conflict', {
+                jobId: dec.jobId,
+                currentOwnerId: itemRes.currentOwnerId,
+                expiresAt: itemRes.expiresAt,
+              });
+              decisionMap.set(dec.jobId, unschedulable);
+            } else {
+              const details =
+                (itemRes && 'details' in itemRes ? itemRes.details : undefined) ??
+                'Job not claimable';
+              const unschedulable: UnschedulableDecision = {
+                status: 'UNSCHEDULABLE',
+                jobId: dec.jobId,
+                candidateWorkerCount: dec.candidateWorkerCount,
+                eligibleWorkerCount: dec.eligibleWorkerCount,
+                priority: dec.priority,
+                reason: 'LEASE_CONFLICT',
+                failureReasons: Object.freeze([details]),
+              };
+              this.logger?.warn('Scheduler placement failed: job not claimable', {
+                jobId: dec.jobId,
+                reason: itemRes && 'reason' in itemRes ? itemRes.reason : undefined,
+                details,
+              });
+              decisionMap.set(dec.jobId, unschedulable);
+            }
           }
-        } else {
-          finalOrdered.push(dec);
+        }
+
+        for (const dec of baseResult.orderedDecisions) {
+          if (dec.status === 'SCHEDULED') {
+            const finalDec = decisionMap.get(dec.jobId)!;
+            finalOrdered.push(finalDec);
+            if (finalDec.status === 'SCHEDULED') {
+              finalScheduled.push(finalDec);
+            } else {
+              finalUnschedulable.push(finalDec);
+            }
+          } else {
+            finalOrdered.push(dec);
+          }
+        }
+      } else {
+        for (const dec of baseResult.orderedDecisions) {
+          if (dec.status === 'SCHEDULED') {
+            const finalDec = await this.claimLeaseForDecision(dec);
+            finalOrdered.push(finalDec);
+            if (finalDec.status === 'SCHEDULED') {
+              finalScheduled.push(finalDec);
+            } else {
+              finalUnschedulable.push(finalDec);
+            }
+          } else {
+            finalOrdered.push(dec);
+          }
         }
       }
 

@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  BatchClaimItemResult,
+  BatchClaimOptions,
+  BatchClaimResult,
   ClaimJobOptions,
   ClaimJobResult,
   JobLeaseStatus,
@@ -27,94 +30,47 @@ export class PgWorkerLeaseRepository implements WorkerLeaseRepository {
 
   public async claim(options: ClaimJobOptions): Promise<ClaimJobResult> {
     try {
-      return await this.withTransactionClient(async (txClient) => {
-        // 1. Lock job row to serialize concurrent claims
-        const jobRes = await txClient.query<JobLockRow>(
-          'SELECT id, status FROM jobs WHERE id = $1 FOR UPDATE;',
-          [options.jobId],
-        );
+      const batchResult = await this.claimBatch({
+        items: [
+          {
+            jobId: options.jobId,
+            workerId: options.workerId,
+            durationMs: options.durationMs,
+          },
+        ],
+      });
 
-        if (jobRes.rows.length === 0) {
-          return {
-            status: 'NOT_CLAIMABLE',
-            reason: 'JOB_NOT_FOUND',
-            details: `Job "${options.jobId}" does not exist.`,
-          };
-        }
+      const itemRes = batchResult.results[0];
+      if (!itemRes) {
+        throw new Error(`Batch claim returned empty results for job "${options.jobId}"`);
+      }
 
-        const job = jobRes.rows[0]!;
-        if (job.status !== 'QUEUED') {
-          return {
-            status: 'NOT_CLAIMABLE',
-            reason: 'JOB_NOT_CLAIMABLE',
-            details: `Job "${options.jobId}" is in status "${job.status}", expected "QUEUED".`,
-          };
-        }
-
-        // 2. Check for an existing ACTIVE lease
-        const leaseRes = await txClient.query<LeaseCheckRow>(
-          `
-          SELECT id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at,
-                 (expires_at <= NOW()) AS is_expired
-          FROM worker_leases
-          WHERE job_id = $1 AND status = 'ACTIVE'
-          FOR UPDATE;
-          `,
-          [options.jobId],
-        );
-
-        if (leaseRes.rows.length > 0) {
-          const currentLease = leaseRes.rows[0]!;
-
-          // If lease is still valid and unexpired
-          if (!currentLease.is_expired) {
-            if (currentLease.worker_id === options.workerId) {
-              // Idempotent re-claim by the same worker
-              return {
-                status: 'ACQUIRED',
-                lease: this.mapRow(currentLease),
-                isIdempotent: true,
-              };
-            }
-
-            // Held by another worker
-            return {
-              status: 'CONFLICT',
-              reason: 'LEASE_ALREADY_HELD',
-              currentOwnerId: currentLease.worker_id,
-              expiresAt: new Date(currentLease.expires_at),
-            };
-          }
-
-          // Lease is expired - mark it EXPIRED so the new lease can be acquired
-          await txClient.query(`UPDATE worker_leases SET status = 'EXPIRED' WHERE id = $1;`, [
-            currentLease.id,
-          ]);
-        }
-
-        // 3. Create new ACTIVE lease
-        const leaseId = `lease_${randomUUID()}`;
-        const insertRes = await txClient.query<WorkerLeaseRow>(
-          `
-          INSERT INTO worker_leases (
-            id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at
-          )
-          VALUES (
-            $1, $2, $3, 'ACTIVE', $4, NOW(), NOW(), NOW() + ($5 * INTERVAL '1 millisecond'), NOW()
-          )
-          RETURNING id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at;
-          `,
-          [leaseId, options.jobId, options.workerId, options.durationMs, options.durationMs],
-        );
-
+      if (itemRes.status === 'ACQUIRED') {
         return {
           status: 'ACQUIRED',
-          lease: this.mapRow(insertRes.rows[0]!),
-          isIdempotent: false,
+          lease: itemRes.lease,
+          isIdempotent: itemRes.isIdempotent,
         };
-      });
+      }
+
+      if (itemRes.status === 'CONFLICT') {
+        return {
+          status: 'CONFLICT',
+          reason: itemRes.reason,
+          currentOwnerId: itemRes.currentOwnerId,
+          expiresAt: itemRes.expiresAt,
+        };
+      }
+
+      return {
+        status: 'NOT_CLAIMABLE',
+        reason: itemRes.reason === 'DUPLICATE_IN_BATCH' ? 'JOB_NOT_CLAIMABLE' : itemRes.reason,
+        details: itemRes.details,
+      };
     } catch (err) {
-      const pgErr = err as { code?: string; message?: string };
+      const cause = (err as PersistenceError).cause as
+        { code?: string; message?: string } | undefined;
+      const pgErr = cause ?? (err as { code?: string; message?: string });
       // Handle race condition on partial unique index uq_worker_leases_active_job
       if (pgErr?.code === '23505') {
         const active = await this.findActiveByJobId(options.jobId);
@@ -135,8 +91,269 @@ export class PgWorkerLeaseRepository implements WorkerLeaseRepository {
         }
       }
 
+      throw err instanceof PersistenceError
+        ? err
+        : new PersistenceError(
+            `Failed to claim job lease for job "${options.jobId}": ${(err as Error).message}`,
+            err as Error,
+          );
+    }
+  }
+
+  public async claimBatch(options: BatchClaimOptions): Promise<BatchClaimResult> {
+    if (!options.items || options.items.length === 0) {
+      return {
+        results: [],
+        acquiredCount: 0,
+        conflictCount: 0,
+        notClaimableCount: 0,
+      };
+    }
+
+    try {
+      return await this.withTransactionClient(async (txClient) => {
+        const items = options.items;
+        const results: (BatchClaimItemResult | null)[] = new Array(items.length).fill(null);
+
+        // Track first index of each job ID in this batch to handle duplicates
+        const firstIndexForJob = new Map<string, number>();
+        const jobIdsToQuery: string[] = [];
+
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]!;
+          if (firstIndexForJob.has(item.jobId)) {
+            continue;
+          }
+          firstIndexForJob.set(item.jobId, i);
+          jobIdsToQuery.push(item.jobId);
+        }
+
+        // Canonical ascending sort on unique job IDs to prevent deadlocks across concurrent transactions
+        const sortedJobIds = [...jobIdsToQuery].sort();
+
+        // 1. Lock job rows in canonical ascending order
+        const jobRes = await txClient.query<JobLockRow>(
+          `SELECT id, status FROM jobs WHERE id = ANY($1::text[]) ORDER BY id ASC FOR UPDATE;`,
+          [sortedJobIds],
+        );
+
+        const jobStatusMap = new Map<string, string>();
+        for (const row of jobRes.rows) {
+          jobStatusMap.set(row.id, row.status);
+        }
+
+        // 2. Lock active leases for these jobs in canonical ascending order
+        const leaseRes = await txClient.query<LeaseCheckRow>(
+          `
+          SELECT id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at,
+                 (expires_at <= NOW()) AS is_expired
+          FROM worker_leases
+          WHERE job_id = ANY($1::text[]) AND status = 'ACTIVE'
+          ORDER BY id ASC
+          FOR UPDATE;
+          `,
+          [sortedJobIds],
+        );
+
+        const activeLeaseMap = new Map<string, LeaseCheckRow>();
+        for (const row of leaseRes.rows) {
+          activeLeaseMap.set(row.job_id, row);
+        }
+
+        const expiredLeaseIdsToUpdate: string[] = [];
+        interface InsertCandidate {
+          id: string;
+          jobId: string;
+          workerId: string;
+          durationMs: number;
+          primaryIndex: number;
+        }
+        const leasesToInsert: InsertCandidate[] = [];
+
+        // Evaluate primary items for each unique job ID
+        for (const [jobId, primaryIdx] of firstIndexForJob.entries()) {
+          const item = items[primaryIdx]!;
+          const status = jobStatusMap.get(jobId);
+
+          if (!status) {
+            results[primaryIdx] = {
+              jobId: item.jobId,
+              workerId: item.workerId,
+              status: 'NOT_CLAIMABLE',
+              reason: 'JOB_NOT_FOUND',
+              details: `Job "${item.jobId}" does not exist.`,
+            };
+            continue;
+          }
+
+          if (status !== 'QUEUED') {
+            results[primaryIdx] = {
+              jobId: item.jobId,
+              workerId: item.workerId,
+              status: 'NOT_CLAIMABLE',
+              reason: 'JOB_NOT_CLAIMABLE',
+              details: `Job "${item.jobId}" is in status "${status}", expected "QUEUED".`,
+            };
+            continue;
+          }
+
+          const currentLease = activeLeaseMap.get(jobId);
+          if (currentLease) {
+            if (!currentLease.is_expired) {
+              if (currentLease.worker_id === item.workerId) {
+                results[primaryIdx] = {
+                  jobId: item.jobId,
+                  workerId: item.workerId,
+                  status: 'ACQUIRED',
+                  lease: this.mapRow(currentLease),
+                  isIdempotent: true,
+                };
+              } else {
+                results[primaryIdx] = {
+                  jobId: item.jobId,
+                  workerId: item.workerId,
+                  status: 'CONFLICT',
+                  reason: 'LEASE_ALREADY_HELD',
+                  currentOwnerId: currentLease.worker_id,
+                  expiresAt: new Date(currentLease.expires_at),
+                };
+              }
+              continue;
+            }
+
+            // Existing lease is expired - mark for batch update
+            expiredLeaseIdsToUpdate.push(currentLease.id);
+          }
+
+          const durationMs = item.durationMs ?? options.defaultDurationMs ?? 30000;
+          leasesToInsert.push({
+            id: `lease_${randomUUID()}`,
+            jobId: item.jobId,
+            workerId: item.workerId,
+            durationMs,
+            primaryIndex: primaryIdx,
+          });
+        }
+
+        // Expire leases in bulk
+        if (expiredLeaseIdsToUpdate.length > 0) {
+          await txClient.query(
+            `UPDATE worker_leases SET status = 'EXPIRED' WHERE id = ANY($1::text[]);`,
+            [expiredLeaseIdsToUpdate],
+          );
+        }
+
+        // Insert new leases in bulk
+        if (leasesToInsert.length > 0) {
+          const ids = leasesToInsert.map((l) => l.id);
+          const jobIds = leasesToInsert.map((l) => l.jobId);
+          const workerIds = leasesToInsert.map((l) => l.workerId);
+          const durations = leasesToInsert.map((l) => l.durationMs);
+
+          const insertRes = await txClient.query<WorkerLeaseRow>(
+            `
+            INSERT INTO worker_leases (
+              id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at
+            )
+            SELECT
+              v.id,
+              v.job_id,
+              v.worker_id,
+              'ACTIVE',
+              v.duration_ms,
+              NOW(),
+              NOW(),
+              NOW() + (v.duration_ms * INTERVAL '1 millisecond'),
+              NOW()
+            FROM (
+              SELECT
+                unnest($1::text[]) AS id,
+                unnest($2::text[]) AS job_id,
+                unnest($3::text[]) AS worker_id,
+                unnest($4::int[]) AS duration_ms
+            ) AS v
+            RETURNING id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at;
+            `,
+            [ids, jobIds, workerIds, durations],
+          );
+
+          const insertedByJobId = new Map<string, WorkerLease>();
+          for (const row of insertRes.rows) {
+            insertedByJobId.set(row.job_id, this.mapRow(row));
+          }
+
+          for (const insertItem of leasesToInsert) {
+            const lease = insertedByJobId.get(insertItem.jobId);
+            if (lease) {
+              results[insertItem.primaryIndex] = {
+                jobId: insertItem.jobId,
+                workerId: insertItem.workerId,
+                status: 'ACQUIRED',
+                lease,
+                isIdempotent: false,
+              };
+            }
+          }
+        }
+
+        // Resolve intra-batch duplicate items
+        for (let i = 0; i < items.length; i++) {
+          if (results[i] !== null) continue;
+          const item = items[i]!;
+          const primaryIdx = firstIndexForJob.get(item.jobId)!;
+          const primaryResult = results[primaryIdx]!;
+
+          if (primaryResult.status === 'ACQUIRED') {
+            if (primaryResult.workerId === item.workerId) {
+              results[i] = {
+                jobId: item.jobId,
+                workerId: item.workerId,
+                status: 'ACQUIRED',
+                lease: primaryResult.lease,
+                isIdempotent: true,
+              };
+            } else {
+              results[i] = {
+                jobId: item.jobId,
+                workerId: item.workerId,
+                status: 'CONFLICT',
+                reason: 'LEASE_ALREADY_HELD',
+                currentOwnerId: primaryResult.workerId,
+                expiresAt: primaryResult.lease.expiresAt,
+              };
+            }
+          } else {
+            results[i] = {
+              jobId: item.jobId,
+              workerId: item.workerId,
+              status: 'NOT_CLAIMABLE',
+              reason: 'DUPLICATE_IN_BATCH',
+              details: `Duplicate request in batch for job "${item.jobId}" where primary attempt resulted in ${primaryResult.status}.`,
+            };
+          }
+        }
+
+        const finalResults = results as BatchClaimItemResult[];
+        let acquiredCount = 0;
+        let conflictCount = 0;
+        let notClaimableCount = 0;
+
+        for (const res of finalResults) {
+          if (res.status === 'ACQUIRED') acquiredCount++;
+          else if (res.status === 'CONFLICT') conflictCount++;
+          else if (res.status === 'NOT_CLAIMABLE') notClaimableCount++;
+        }
+
+        return {
+          results: finalResults,
+          acquiredCount,
+          conflictCount,
+          notClaimableCount,
+        };
+      });
+    } catch (err) {
       throw new PersistenceError(
-        `Failed to claim job lease for job "${options.jobId}": ${(err as Error).message}`,
+        `Failed to execute batch lease claim: ${(err as Error).message}`,
         err as Error,
       );
     }
