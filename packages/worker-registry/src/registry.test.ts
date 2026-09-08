@@ -319,5 +319,39 @@ describe('Real PostgreSQL & Redis WorkerRegistry Integration Tests', () => {
       expect(offlineOnly.length).toBe(1);
       expect(offlineOnly[0]!.worker.workerId).toBe(w3);
     });
+
+    it('heartbeat loss marks worker as STALE without mutating database status (PostgreSQL remains authority)', async () => {
+      const lostWorkerId = createWorkerId('worker-lost-heartbeat');
+
+      await registry.register({
+        workerId: lostWorkerId,
+        hostname: 'node-lost-1',
+        capabilities: { executors: ['docker'] },
+        resources: { cpuCores: 4, memoryBytes: 4096 },
+      });
+
+      // Initially ALIVE and READY in both Redis and PostgreSQL
+      const initialInfo = await registry.getWorker(lostWorkerId);
+      expect(initialInfo).not.toBeNull();
+      expect(initialInfo!.liveness).toBe('ALIVE');
+      expect(initialInfo!.worker.status).toBe('READY');
+
+      // Expire heartbeat from Redis (simulate network partition / crash)
+      await heartbeatStore.removeHeartbeat(lostWorkerId);
+
+      // Verify: Worker registry now reports STALE liveness
+      const staleInfo = await registry.getWorker(lostWorkerId);
+      expect(staleInfo).not.toBeNull();
+      expect(staleInfo!.liveness).toBe('STALE');
+
+      // Crucial architectural guarantee: PostgreSQL record is NOT mutated by Redis heartbeat expiration.
+      // Worker status in DB is STILL READY, not destroyed or modified.
+      const dbWorker = await workerRepo.findById(lostWorkerId);
+      expect(dbWorker).not.toBeNull();
+      expect(dbWorker!.status).toBe('READY');
+
+      // Scheduler will filter this worker out from candidate selection because liveness === 'STALE',
+      // but lease recovery remains strictly tied to PostgreSQL worker_leases.expires_at.
+    });
   });
 });

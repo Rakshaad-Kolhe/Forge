@@ -42,6 +42,12 @@ export interface StartWorkerOptions {
   capabilities?: WorkerCapabilities;
   resources?: WorkerResources;
   heartbeatIntervalMs?: number;
+  drainTimeoutMs?: number;
+}
+
+export interface StopWorkerOptions {
+  readonly drain?: boolean;
+  readonly timeoutMs?: number;
 }
 
 export interface ExecuteJobOptions {
@@ -68,7 +74,8 @@ export interface WorkerShell {
   releaseLease: (leaseId: string, jobId: string) => Promise<ReleaseLeaseResult>;
   executeJob: (options: ExecuteJobOptions) => Promise<ExecuteJobResult>;
   getActiveLeases: () => readonly WorkerLease[];
-  stop: () => Promise<void>;
+  drain: (options?: { timeoutMs?: number }) => Promise<void>;
+  stop: (options?: StopWorkerOptions) => Promise<void>;
 }
 
 /**
@@ -88,8 +95,10 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
   const workerId = createWorkerId(options?.workerId ?? crypto.randomUUID());
   let currentStatus: WorkerStatus = 'READY';
   let heartbeatTimer: NodeJS.Timeout | undefined;
+  let shutdownPromise: Promise<void> | null = null;
   const activeLeases = new Map<string, WorkerLease>();
   const activeExecutions = new Set<AbortController>();
+  const activeTasks = new Set<Promise<unknown>>();
 
   const defaultExecutor =
     options?.executor ??
@@ -159,6 +168,13 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
   }
 
   const claimJob = async (jobId: string, durationMs?: number): Promise<ClaimJobResult> => {
+    if (currentStatus === 'DRAINING' || currentStatus === 'OFFLINE') {
+      return {
+        status: 'NOT_CLAIMABLE',
+        reason: 'JOB_NOT_CLAIMABLE',
+        details: `Worker "${workerId}" is in ${currentStatus} state and not accepting new jobs`,
+      };
+    }
     if (!options?.leaseRepository) {
       throw new Error('Worker cannot claim job without configured leaseRepository');
     }
@@ -236,230 +252,291 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
   };
 
   const executeJob = async (jobOpts: ExecuteJobOptions): Promise<ExecuteJobResult> => {
-    const { job, leaseId } = jobOpts;
+    if (currentStatus === 'DRAINING' || currentStatus === 'OFFLINE') {
+      throw new Error(
+        `Worker "${workerId}" is in ${currentStatus} state and not accepting new executions`,
+      );
+    }
 
-    // 1. Pre-execution lease ownership validation
-    if (options?.leaseRepository) {
-      const activeLease = await options.leaseRepository.findActiveByJobId(job.id);
-      if (!activeLease || activeLease.id !== leaseId || activeLease.workerId !== workerId) {
-        throw new Error(
-          `Worker "${workerId}" does not hold active lease "${leaseId}" for job "${job.id}"`,
-        );
+    const run = async (): Promise<ExecuteJobResult> => {
+      const { job, leaseId } = jobOpts;
+
+      // 1. Pre-execution lease ownership validation
+      if (options?.leaseRepository) {
+        const activeLease = await options.leaseRepository.findActiveByJobId(job.id);
+        if (!activeLease || activeLease.id !== leaseId || activeLease.workerId !== workerId) {
+          throw new Error(
+            `Worker "${workerId}" does not hold active lease "${leaseId}" for job "${job.id}"`,
+          );
+        }
       }
-    }
 
-    // 2. Lifecycle start: spawn JobAttempt and transition Job/Attempt to RUNNING
-    const attempt = job.createAttempt();
-    attempt.start(new Date().toISOString());
-    job.start();
+      // 2. Lifecycle start: spawn JobAttempt and transition Job/Attempt to RUNNING
+      const attempt = job.createAttempt();
+      attempt.start(new Date().toISOString());
+      job.start();
 
-    // Persist RUNNING state to authoritative store
-    if (options?.pool) {
-      await withTransaction(options.pool, async (tx) => {
-        await tx.jobs.save(job);
-        await tx.jobAttempts.save(attempt);
-      });
-    } else if (options?.jobRepository) {
-      await options.jobRepository.save(job);
-    }
+      // Persist RUNNING state to authoritative store
+      if (options?.pool) {
+        await withTransaction(options.pool, async (tx) => {
+          await tx.jobs.save(job);
+          await tx.jobAttempts.save(attempt);
+        });
+      } else if (options?.jobRepository) {
+        await options.jobRepository.save(job);
+      }
 
-    // 3. Periodic lease renewal background timer
-    const abortController = new AbortController();
-    activeExecutions.add(abortController);
-    let renewalTimer: NodeJS.Timeout | undefined;
-    let ownershipLost = false;
+      // 3. Periodic lease renewal background timer
+      const abortController = new AbortController();
+      activeExecutions.add(abortController);
+      let renewalTimer: NodeJS.Timeout | undefined;
+      let ownershipLost = false;
 
-    if (options?.leaseRepository) {
-      const renewalInterval =
-        options.defaultLeaseRenewalIntervalMs ?? config.workerJobLeaseRenewalIntervalMs;
-      const leaseDuration = options.defaultLeaseDurationMs ?? config.workerJobLeaseDurationMs;
+      if (options?.leaseRepository) {
+        const renewalInterval =
+          options.defaultLeaseRenewalIntervalMs ?? config.workerJobLeaseRenewalIntervalMs;
+        const leaseDuration = options.defaultLeaseDurationMs ?? config.workerJobLeaseDurationMs;
 
-      renewalTimer = setInterval(async () => {
-        try {
-          const renewRes = await renewLease(leaseId, job.id, leaseDuration);
-          if (renewRes.status === 'REJECTED') {
-            if (renewRes.reason === 'LEASE_EXPIRED' || renewRes.reason === 'LEASE_OWNER_MISMATCH') {
-              ownershipLost = true;
-              logger.warn('Lease ownership lost during execution, aborting running container', {
-                workerId,
-                jobId: job.id,
-                leaseId,
-                reason: renewRes.reason,
-              });
-              abortController.abort();
+        renewalTimer = setInterval(async () => {
+          try {
+            const renewRes = await renewLease(leaseId, job.id, leaseDuration);
+            if (renewRes.status === 'REJECTED') {
+              if (
+                renewRes.reason === 'LEASE_EXPIRED' ||
+                renewRes.reason === 'LEASE_OWNER_MISMATCH'
+              ) {
+                ownershipLost = true;
+                logger.warn('Lease ownership lost during execution, aborting running container', {
+                  workerId,
+                  jobId: job.id,
+                  leaseId,
+                  reason: renewRes.reason,
+                });
+                abortController.abort();
+              }
             }
+          } catch (err: unknown) {
+            logger.error('Error during periodic lease renewal tick', {
+              workerId,
+              jobId: job.id,
+              leaseId,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
-        } catch (err: unknown) {
-          logger.error('Error during periodic lease renewal tick', {
+        }, renewalInterval);
+        renewalTimer.unref();
+      }
+
+      // 4. Execute container workload via Executor
+      const executorToUse = jobOpts.executor ?? defaultExecutor;
+      let execResult: ExecutionResult;
+
+      try {
+        execResult = await executorToUse.execute({
+          jobId: job.id,
+          attemptId: attempt.id,
+          workerId,
+          command: job.command,
+          image: jobOpts.image,
+          environment: jobOpts.environment,
+          cpuCores: job.requirements?.cpuCores,
+          memoryBytes: job.requirements?.memoryBytes,
+          timeoutMs: jobOpts.timeoutMs,
+          abortSignal: abortController.signal,
+        });
+      } catch (err) {
+        execResult = {
+          status: 'FAILED',
+          exitCode: null,
+          startedAt: new Date(),
+          finishedAt: new Date(),
+          durationMs: 0,
+          stdout: '',
+          stderr: err instanceof Error ? err.message : String(err),
+          truncated: false,
+          failureReason: err instanceof Error ? err.message : String(err),
+        };
+      } finally {
+        if (renewalTimer) {
+          clearInterval(renewalTimer);
+        }
+        activeExecutions.delete(abortController);
+      }
+
+      // 5. Apply state machine transitions and evaluate retry policies
+      let retryDecision: RetryDecision | undefined;
+
+      if (ownershipLost) {
+        attempt.fail(1, 'Lease ownership lost during execution', new Date().toISOString());
+        job.fail();
+        job.clearNextAttemptAt?.();
+      } else if (execResult.status === 'SUCCEEDED') {
+        attempt.succeed(execResult.exitCode ?? 0, execResult.finishedAt.toISOString());
+        job.succeed();
+        job.clearNextAttemptAt?.();
+      } else if (execResult.status === 'CANCELLED') {
+        attempt.cancel(execResult.finishedAt.toISOString());
+        job.cancel();
+        job.clearNextAttemptAt?.();
+      } else {
+        // execResult.status is FAILED or TIMED_OUT
+        if (execResult.status === 'TIMED_OUT') {
+          attempt.timeout(execResult.finishedAt.toISOString());
+        } else {
+          attempt.fail(
+            execResult.exitCode ?? 1,
+            execResult.failureReason,
+            execResult.finishedAt.toISOString(),
+          );
+        }
+
+        // Pure retry decision evaluation
+        retryDecision = evaluateRetry(attempt, job.retryPolicy);
+
+        if (retryDecision.action === 'RETRY') {
+          job.transitionTo('QUEUED');
+          const nextAttemptAt = new Date(Date.now() + retryDecision.delayMs);
+          job.setNextAttemptAt?.(nextAttemptAt);
+
+          logger.info('Job execution failed but retry scheduled', {
+            workerId,
+            jobId: job.id,
+            attemptNumber: attempt.attemptNumber,
+            nextAttemptNumber: retryDecision.nextAttemptNumber,
+            delayMs: retryDecision.delayMs,
+            nextAttemptAt: nextAttemptAt.toISOString(),
+            reason: retryDecision.reason,
+          });
+        } else {
+          if (execResult.status === 'TIMED_OUT') {
+            job.timeout();
+          } else {
+            job.fail();
+          }
+          job.clearNextAttemptAt?.();
+
+          logger.info(
+            'Job execution failed permanently; retry policy exhausted or not applicable',
+            {
+              workerId,
+              jobId: job.id,
+              attemptNumber: attempt.attemptNumber,
+              reason: retryDecision.reason,
+            },
+          );
+        }
+      }
+
+      // 6. Transactional persistence
+      if (options?.pool) {
+        await withTransaction(options.pool, async (tx) => {
+          await tx.jobs.save(job);
+          await tx.jobAttempts.save(attempt);
+        });
+      } else if (options?.jobRepository) {
+        await options.jobRepository.save(job);
+      }
+
+      // 7. Authoritative lease release (only if ownership was not lost)
+      if (!ownershipLost && options?.leaseRepository) {
+        try {
+          await releaseLease(leaseId, job.id);
+        } catch (err) {
+          logger.warn('Failed to release lease after execution', {
             workerId,
             jobId: job.id,
             leaseId,
             error: err instanceof Error ? err.message : String(err),
           });
         }
-      }, renewalInterval);
-      renewalTimer.unref();
-    }
+      }
 
-    // 4. Execute container workload via Executor
-    const executorToUse = jobOpts.executor ?? defaultExecutor;
-    let execResult: ExecutionResult;
-
-    try {
-      execResult = await executorToUse.execute({
-        jobId: job.id,
-        attemptId: attempt.id,
-        workerId,
-        command: job.command,
-        image: jobOpts.image,
-        environment: jobOpts.environment,
-        cpuCores: job.requirements?.cpuCores,
-        memoryBytes: job.requirements?.memoryBytes,
-        timeoutMs: jobOpts.timeoutMs,
-        abortSignal: abortController.signal,
-      });
-    } catch (err) {
-      execResult = {
-        status: 'FAILED',
-        exitCode: null,
-        startedAt: new Date(),
-        finishedAt: new Date(),
-        durationMs: 0,
-        stdout: '',
-        stderr: err instanceof Error ? err.message : String(err),
-        truncated: false,
-        failureReason: err instanceof Error ? err.message : String(err),
+      return {
+        result: execResult,
+        attempt,
+        job,
+        retryDecision,
       };
-    } finally {
-      if (renewalTimer) {
-        clearInterval(renewalTimer);
-      }
-      activeExecutions.delete(abortController);
-    }
-
-    // 5. Apply state machine transitions and evaluate retry policies
-    let retryDecision: RetryDecision | undefined;
-
-    if (ownershipLost) {
-      attempt.fail(1, 'Lease ownership lost during execution', new Date().toISOString());
-      job.fail();
-      job.clearNextAttemptAt?.();
-    } else if (execResult.status === 'SUCCEEDED') {
-      attempt.succeed(execResult.exitCode ?? 0, execResult.finishedAt.toISOString());
-      job.succeed();
-      job.clearNextAttemptAt?.();
-    } else if (execResult.status === 'CANCELLED') {
-      attempt.cancel(execResult.finishedAt.toISOString());
-      job.cancel();
-      job.clearNextAttemptAt?.();
-    } else {
-      // execResult.status is FAILED or TIMED_OUT
-      if (execResult.status === 'TIMED_OUT') {
-        attempt.timeout(execResult.finishedAt.toISOString());
-      } else {
-        attempt.fail(
-          execResult.exitCode ?? 1,
-          execResult.failureReason,
-          execResult.finishedAt.toISOString(),
-        );
-      }
-
-      // Pure retry decision evaluation
-      retryDecision = evaluateRetry(attempt, job.retryPolicy);
-
-      if (retryDecision.action === 'RETRY') {
-        job.transitionTo('QUEUED');
-        const nextAttemptAt = new Date(Date.now() + retryDecision.delayMs);
-        job.setNextAttemptAt?.(nextAttemptAt);
-
-        logger.info('Job execution failed but retry scheduled', {
-          workerId,
-          jobId: job.id,
-          attemptNumber: attempt.attemptNumber,
-          nextAttemptNumber: retryDecision.nextAttemptNumber,
-          delayMs: retryDecision.delayMs,
-          nextAttemptAt: nextAttemptAt.toISOString(),
-          reason: retryDecision.reason,
-        });
-      } else {
-        if (execResult.status === 'TIMED_OUT') {
-          job.timeout();
-        } else {
-          job.fail();
-        }
-        job.clearNextAttemptAt?.();
-
-        logger.info('Job execution failed permanently; retry policy exhausted or not applicable', {
-          workerId,
-          jobId: job.id,
-          attemptNumber: attempt.attemptNumber,
-          reason: retryDecision.reason,
-        });
-      }
-    }
-
-    // 6. Transactional persistence
-    if (options?.pool) {
-      await withTransaction(options.pool, async (tx) => {
-        await tx.jobs.save(job);
-        await tx.jobAttempts.save(attempt);
-      });
-    } else if (options?.jobRepository) {
-      await options.jobRepository.save(job);
-    }
-
-    // 7. Authoritative lease release (only if ownership was not lost)
-    if (!ownershipLost && options?.leaseRepository) {
-      try {
-        await releaseLease(leaseId, job.id);
-      } catch (err) {
-        logger.warn('Failed to release lease after execution', {
-          workerId,
-          jobId: job.id,
-          leaseId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    return {
-      result: execResult,
-      attempt,
-      job,
-      retryDecision,
     };
+
+    const taskPromise = run();
+    activeTasks.add(taskPromise);
+    try {
+      return await taskPromise;
+    } finally {
+      activeTasks.delete(taskPromise);
+    }
   };
 
   const getActiveLeases = (): readonly WorkerLease[] => {
     return Object.freeze(Array.from(activeLeases.values()));
   };
 
-  return {
-    workerId,
-    getStatus: () => currentStatus,
-    claimJob,
-    renewLease,
-    releaseLease,
-    executeJob,
-    getActiveLeases,
-    stop: async () => {
-      // Abort any actively executing containers
-      for (const controller of activeExecutions) {
-        try {
-          controller.abort();
-        } catch {
-          // ignore
+  const drain = async (drainOpts?: { timeoutMs?: number }): Promise<void> => {
+    if (currentStatus === 'OFFLINE') {
+      return;
+    }
+    if (currentStatus === 'DRAINING') {
+      if (shutdownPromise) {
+        await shutdownPromise;
+      }
+      return;
+    }
+
+    currentStatus = 'DRAINING';
+    logger.info('Worker entered DRAINING state', { workerId });
+
+    if (options?.registry) {
+      try {
+        await options.registry.heartbeat(workerId, 'DRAINING');
+      } catch (err: unknown) {
+        logger.warn('Failed to update worker status to DRAINING in registry', {
+          workerId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const timeoutMs = drainOpts?.timeoutMs ?? options?.drainTimeoutMs ?? 30000;
+    if (activeTasks.size > 0) {
+      logger.info('Worker waiting for in-flight executions to finish during drain', {
+        workerId,
+        inFlightCount: activeTasks.size,
+        timeoutMs,
+      });
+
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, timeoutMs));
+      await Promise.race([Promise.allSettled(Array.from(activeTasks)), timeoutPromise]);
+    }
+
+    for (const controller of activeExecutions) {
+      try {
+        controller.abort();
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const stop = async (stopOpts?: StopWorkerOptions): Promise<void> => {
+    if (shutdownPromise) {
+      return shutdownPromise;
+    }
+
+    shutdownPromise = (async () => {
+      if (stopOpts?.drain !== false) {
+        await drain({ timeoutMs: stopOpts?.timeoutMs });
+      } else {
+        for (const controller of activeExecutions) {
+          try {
+            controller.abort();
+          } catch {
+            // ignore
+          }
         }
       }
       activeExecutions.clear();
 
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = undefined;
-      }
-      logger.info('Forge Worker service shell stopped', { workerId });
-
-      // Gracefully release all actively held leases
       if (options?.leaseRepository && activeLeases.size > 0) {
         for (const [leaseId, lease] of Array.from(activeLeases.entries())) {
           try {
@@ -484,9 +561,15 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
         activeLeases.clear();
       }
 
+      currentStatus = 'OFFLINE';
+
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+      }
+
       if (options?.registry) {
         try {
-          currentStatus = 'OFFLINE';
           await options.registry.deregister(workerId);
         } catch (err: unknown) {
           logger.error('Worker deregistration failed', {
@@ -495,7 +578,23 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
           });
         }
       }
-    },
+
+      logger.info('Forge Worker service shell stopped', { workerId });
+    })();
+
+    return shutdownPromise;
+  };
+
+  return {
+    workerId,
+    getStatus: () => currentStatus,
+    claimJob,
+    renewLease,
+    releaseLease,
+    executeJob,
+    getActiveLeases,
+    drain,
+    stop,
   };
 }
 
@@ -508,8 +607,9 @@ const isDirectRun =
 if (isDirectRun) {
   const shell = startWorker();
 
-  const shutdown = async (_signal: string) => {
-    await shell.stop();
+  const shutdown = async (signal: string) => {
+    console.info(`[forge-worker] Received ${signal}, initiating graceful drain and shutdown`);
+    await shell.stop({ drain: true });
     process.exit(0);
   };
 

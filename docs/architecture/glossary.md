@@ -159,3 +159,23 @@ The distributed auditability guarantee that historical `JobAttempt` records are 
 ### Worker Hopping
 
 The distributed systems capability whereby sequential attempts of the same job can be claimed and executed by different worker nodes due to per-attempt lease isolation.
+
+### Dead-Letter Queue (DLQ)
+
+An authoritative operational holding area in PostgreSQL (`dead_letter_jobs`) for jobs that have exhausted all retry attempts, encountered non-retryable failures, or suffered catastrophic execution errors. Designed for diagnostic inspection rather than silent data destruction.
+
+### Worker Loss Detection
+
+The mechanism of identifying that an assigned worker node is no longer operating on its claimed workload. Inferred authoritatively via PostgreSQL lease expiration (`worker_leases.status = 'ACTIVE' AND expires_at <= NOW()`), rather than ephemeral Redis heartbeat loss.
+
+### Lease Recovery
+
+The transactional process (`LeaseRecoveryService`) that atomically discovers expired active worker leases using row-level locking (`FOR UPDATE SKIP LOCKED`), reconciles the abandoned in-flight attempt as `FAILED` (`failure_reason = 'WORKER_LOST'`), evaluates the job's retry policy, and either requeues the job with backoff or transitions it to the Dead-Letter Queue.
+
+### Graceful Worker Drain
+
+The structured shutdown process whereby a worker enters the `DRAINING` state, immediately stops accepting new job claims or executions, continues sending heartbeats indicating drain status, and waits for all in-flight container tasks to finish (bounded by `drainTimeoutMs`) before releasing resources and transitioning to `OFFLINE`.
+
+### DRAINING State
+
+An intermediate operational status in the worker lifecycle (`READY -> DRAINING -> OFFLINE`) signaling to schedulers and internal dispatchers that the node is completing active tasks and must not be allocated new work.

@@ -360,3 +360,59 @@ export const MAX_JOB_ATTEMPTS_LIMIT = 10;
 export const DEFAULT_RETRY_BASE_DELAY_MS = 1000;
 export const DEFAULT_MAX_BACKOFF_MS = 60000;
 export const MAX_RETRY_BACKOFF_LIMIT_MS = 3600000;
+
+/**
+ * Standard reasons explaining why a job entered the Dead-Letter Queue (DLQ).
+ */
+export type DeadLetterReason =
+  'RETRY_EXHAUSTED' | 'WORKER_LOSS_RETRY_EXHAUSTED' | 'NON_RETRYABLE_FAILURE';
+
+/**
+ * Durable record representing a dead-lettered job that is no longer eligible for normal scheduling.
+ */
+export interface DeadLetterJob {
+  readonly id: string;
+  readonly jobId: string;
+  readonly pipelineRunId: string;
+  readonly reason: DeadLetterReason;
+  readonly failedAttemptCount: number;
+  readonly lastAttemptId?: string;
+  readonly lastWorkerId?: string;
+  readonly errorDetails?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly createdAt: Date;
+}
+
+/**
+ * Actions taken by the recovery service for an expired lease.
+ */
+export type RecoveryAction = 'REQUEUED' | 'DEAD_LETTERED' | 'SKIPPED_TERMINAL' | 'NO_OP';
+
+/**
+ * Detailed outcome for an individual expired lease evaluated during recovery.
+ */
+export interface RecoveredLeaseRecord {
+  readonly leaseId: string;
+  readonly jobId: string;
+  readonly workerId: string;
+  readonly action: RecoveryAction;
+  readonly nextAttemptAt?: Date;
+  readonly deadLetterReason?: DeadLetterReason;
+  readonly details?: string;
+}
+
+/**
+ * Overall summary produced by a lease recovery sweep.
+ */
+export interface RecoverExpiredLeasesResult {
+  readonly recoveredCount: number;
+  readonly details: readonly RecoveredLeaseRecord[];
+}
+
+/**
+ * Bounded options for controlling lease recovery execution.
+ */
+export interface LeaseRecoveryOptions {
+  readonly batchSize?: number;
+  readonly now?: Date;
+}

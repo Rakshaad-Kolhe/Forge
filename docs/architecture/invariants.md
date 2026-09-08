@@ -90,3 +90,14 @@ This document establishes the binding architectural invariants for Forge V2. The
 4. **Fresh worker lease per attempt.** The worker lease from an execution attempt is always released upon attempt completion, regardless of whether a retry is scheduled. Subsequent attempts must acquire a brand new lease, enabling worker hopping.
 5. **Durable backoff persistence.** Retry delays are committed directly to PostgreSQL (`jobs.next_attempt_at`). Backoffs are evaluated against database time (`NOW()`), surviving process and node restarts, never using in-memory sleep loops or `setTimeout`.
 6. **Non-blocking scheduler semantics.** A job currently waiting in active backoff (`next_attempt_at > NOW()`) produces an `UNSCHEDULABLE` decision with reason `RETRY_BACKOFF_ACTIVE` and never blocks other eligible jobs from being evaluated or scheduled.
+
+---
+
+## 9. Reliability, Worker Loss & Dead-Letter Queue
+
+1. **Worker Loss Detection Authority**: Worker loss is inferred strictly via PostgreSQL lease expiration (`worker_leases.status = 'ACTIVE' AND expires_at <= NOW()`). Redis heartbeat liveness is purely ephemeral for scheduler candidate placement and must never be conflated with authoritative job ownership or used to revoke leases.
+2. **Atomic Recovery Row Locking**: Lease recovery operations must utilize `SELECT ... FOR UPDATE SKIP LOCKED` within transactional boundaries to guarantee that exactly one recovery worker reconciles an expired lease, with concurrent recovery runners yielding safe, idempotent `NO_OP` results.
+3. **Attempt Historical Integrity During Recovery**: Interrupted in-flight execution attempts reconciled during worker loss recovery must be marked `FAILED` with explicit `failure_reason = 'WORKER_LOST'` and final timestamp. Existing attempt records remain strictly immutable historical facts and must never be overwritten or deleted.
+4. **Terminal Job Protection**: Jobs in a terminal state (`SUCCEEDED`, `FAILED`, `CANCELLED`, `TIMED_OUT`) must never be resurrected to `QUEUED` during lease recovery. If an operator cancelled a job while the worker was lost, the lease is marked `EXPIRED` and the job status remains unchanged.
+5. **Dead-Letter Queue (DLQ) Durability & Idempotency**: Jobs with exhausted retries or non-retryable failures must be durably recorded in `dead_letter_jobs` with structured reason taxonomy. The database unique constraint `UNIQUE(job_id)` combined with idempotent upserts prevents duplicate DLQ records under at-least-once recovery loops.
+6. **Graceful Worker Drain Precedence**: A worker entering `DRAINING` status must immediately reject new job claims (`NOT_CLAIMABLE`) and direct execution requests, while maintaining heartbeats with status `DRAINING` to ensure exclusion from scheduler candidate placement. In-flight tasks must be given a bounded grace period (`drainTimeoutMs`) to finish and release leases before final deregistration and transition to `OFFLINE`.

@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 14: Retry Policies, Exponential Backoff & Attempt Orchestration**.
+This repository is currently at **PR 15: Dead-Letter Queue, Worker Loss Recovery & Graceful Shutdown**.
 
 ---
 
@@ -13,24 +13,24 @@ This repository is currently at **PR 14: Retry Policies, Exponential Backoff & A
 - **Repository Architecture**: Monorepo layout using standard NPM workspaces (`apps/*`, `packages/*`).
 - **TypeScript Setup**: Strict TypeScript 5 with composite project references and shared compiler options.
 - **Shared Packages**:
-  - `@forge/contracts`: Shared data contracts, types, and interfaces (including `WorkerCapabilities`, `WorkerResources`, `JobRequirements`, `ScheduleDecision`, `JobPriority` constants `[-1000, 1000]`, `WorkerLease` ownership contracts, `Executor` / `ExecutionContext` / `ExecutionResult` abstractions, and `RetryPolicy` / `BackoffPolicy` / `RetryDecision` specifications).
-  - `@forge/config`: Strongly typed runtime environment validation using Zod (including lease parameters, executor configurations, retry limits, backoff bounds, and schema refinements).
+  - `@forge/contracts`: Shared data contracts, types, and interfaces (including `WorkerCapabilities`, `WorkerResources`, `JobRequirements`, `ScheduleDecision`, `JobPriority` constants `[-1000, 1000]`, `WorkerLease` ownership contracts, `Executor` / `ExecutionContext` / `ExecutionResult` abstractions, `RetryPolicy` / `BackoffPolicy` / `RetryDecision` specifications, and `DeadLetterJob` / `DeadLetterReason` / `LeaseRecoveryOptions` / `RecoverExpiredLeasesResult` reliability models).
+  - `@forge/config`: Strongly typed runtime environment validation using Zod (including lease parameters, executor configurations, retry limits, backoff bounds, drain timeout limits, and schema refinements).
   - `@forge/logging`: Structured logger (human-readable in development, newline-delimited JSON in production).
   - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines, Job Execution Requirements, Job Priority validation, pure deterministic capability/resource matching, pure retry evaluation via `evaluateRetry`, bounded exponential backoff with overflow protection, and attempt immutability).
-  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations `001` through `006`, typed repositories, transactions, state machine integrity enforcement, terminal state immutability, worker registry, persisted job requirements, priority index, `worker_leases` with partial unique index for single-active-lease exclusivity, and `idx_jobs_retry_schedulable` partial index for high-throughput schedulable job discovery).
+  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations `001` through `007`, typed repositories including `PgDeadLetterRepository`, transactions, state machine integrity enforcement, terminal state immutability, worker registry, persisted job requirements, priority index, `worker_leases` with partial unique index for single-active-lease exclusivity, `idx_jobs_retry_schedulable` partial index for high-throughput schedulable job discovery, `LeaseRecoveryService` with row-level locking `FOR UPDATE SKIP LOCKED`, and durable `dead_letter_jobs` table).
   - `@forge/redis`: Redis coordination foundation (Connection management, health checks, low-level generic primitives, TTL, atomic operations, and real Redis integration tests).
   - `@forge/queue`: Redis-backed reliable FIFO job queue (At-least-once delivery, explicit acknowledgement, queue depth, in-flight visibility tracking, crash/unacknowledged recovery, and competing consumer coordination).
-  - `@forge/worker-registry`: Distributed worker registration and liveness coordination (Durable worker metadata and hardware capacity in PostgreSQL, transient heartbeat state with TTL in Redis, crash/stale detection, graceful deregistration, and isolated lifecycle state machines).
+  - `@forge/worker-registry`: Distributed worker registration and liveness coordination (Durable worker metadata and hardware capacity in PostgreSQL, transient heartbeat state with TTL in Redis, crash/stale detection, graceful deregistration, and isolated lifecycle state machines decoupled from lease ownership).
   - `@forge/executor`: Sandboxed container execution engine implementing `Executor` with production-oriented `DockerExecutor`, ephemeral temporary workspace management, non-root user execution (`--user 1000:1000`), container isolation (no privileged mode, no host Docker socket mount, bridge networking), resource limit enforcement (CPU, memory, unverified GPU status), wall-clock timeout supervision (`docker stop` -> `docker kill`), bounded stdout/stderr capture with truncation protection, and guaranteed teardown in `finally` blocks.
 - **Service Shells & Applications**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
-  - `apps/scheduler`: Task scheduler service (`@forge/scheduler`) providing operational eligibility evaluation (`READY + ALIVE`), deterministic worker selection policy (`DeterministicFirstEligible`), priority scheduling policy (`HighestPriorityFirstPolicy`), canonical alphanumeric tie-breaking, non-blocking unschedulable semantics, batch evaluation, unacknowledged queue recoverability, atomic distributed worker lease acquisition via PostgreSQL, and due retry job discovery (`scheduleDueJobs`) with non-blocking backoff awareness (`RETRY_BACKOFF_ACTIVE`).
-  - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, lease lifecycle management (`claimJob`, `renewLease`, `releaseLease`), and containerized job execution (`executeJob`) with active lease validation, periodic lease renewal, definitive lease-loss abort protection, pure retry policy evaluation, transactional PostgreSQL persistence, per-attempt lease isolation enabling worker hopping, and graceful shutdown.
+  - `apps/scheduler`: Task scheduler service (`@forge/scheduler`) providing operational eligibility evaluation (`READY + ALIVE`), exclusion of `DRAINING` workers, deterministic worker selection policy (`DeterministicFirstEligible`), priority scheduling policy (`HighestPriorityFirstPolicy`), canonical alphanumeric tie-breaking, non-blocking unschedulable semantics, batch evaluation, unacknowledged queue recoverability, atomic distributed worker lease acquisition via PostgreSQL, due retry job discovery (`scheduleDueJobs`) with non-blocking backoff awareness (`RETRY_BACKOFF_ACTIVE`), and integrated lease recovery loop (`recoverExpiredLeases`, `startRecoveryLoop`).
+  - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, lease lifecycle management (`claimJob`, `renewLease`, `releaseLease`), containerized job execution (`executeJob`) with active lease validation, periodic lease renewal, definitive lease-loss abort protection, pure retry policy evaluation, transactional PostgreSQL persistence, per-attempt lease isolation enabling worker hopping, three-phase shutdown lifecycle (`READY -> DRAINING -> OFFLINE`), immediate claim/execution rejection during drain, and bounded in-flight execution drain supervision.
   - `apps/cli`: CLI executable supporting `--help` and `--version`.
   - `apps/web`: Next.js landing page displaying architectural boundaries.
-- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, capability/resource matching, job priority validation, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, worker service shell, scheduler selection policies, priority ordering, worker lease lifecycle & concurrency races, Docker executor unit & live container integration, worker execution persistence integration, and live end-to-end retry & attempt orchestration integration.
+- **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, capability/resource matching, job priority validation, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, worker service shell, scheduler selection policies, priority ordering, worker lease lifecycle & concurrency races, Docker executor unit & live container integration, worker execution persistence integration, live end-to-end retry & attempt orchestration integration, PostgreSQL lease recovery & DLQ integration, and live Docker worker loss recovery & graceful drain integration.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
-- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, worker registration spec, resource matching spec, scheduler architecture spec, distributed worker leases spec, container executor spec, and retry policies & attempt orchestration spec in `docs/architecture/`.
+- **Architecture Contracts & ADRs**: Formal architecture decision records (`ADR-001` through `ADR-005`), architectural glossary, invariants catalog, database persistence spec, Redis coordination spec, queue architecture spec, worker registration spec, resource matching spec, scheduler architecture spec, distributed worker leases spec, container executor spec, retry policies & attempt orchestration spec, and reliability & worker loss recovery spec in `docs/architecture/`.
 
 ### Planned (Future PRs)
 
@@ -187,6 +187,10 @@ npm run build -w apps/web
 - [Worker Registration & Heartbeat](docs/architecture/workers.md)
 - [Worker Capability & Resource Matching](docs/architecture/resource-matching.md)
 - [Task Scheduler & Deterministic Worker Selection](docs/architecture/scheduler.md)
+- [Distributed Worker Leases & Job Claiming](docs/architecture/leases.md)
+- [Container Executor & Sandboxed Job Execution](docs/architecture/executor.md)
+- [Retry Policies, Backoff & Attempt Orchestration](docs/architecture/retry.md)
+- [Reliability, Worker Loss Recovery & Graceful Shutdown](docs/architecture/reliability.md)
 - [Architecture Glossary](docs/architecture/glossary.md)
 - [Architectural Invariants Catalog](docs/architecture/invariants.md)
 
