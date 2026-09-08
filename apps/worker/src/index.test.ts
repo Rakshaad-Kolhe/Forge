@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Executor } from '@forge/contracts';
 import type { JobRepository } from '@forge/database';
+import { InProcessEventBus, type ForgeEvent } from '@forge/events';
 import type { Job } from '@forge/pipeline';
 import { startWorker } from './index.js';
 import { createLogger } from '@forge/logging';
@@ -885,5 +886,422 @@ describe('Worker Service Shell', () => {
       await worker.stop();
       expect(deregisterFn).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('Worker Service Shell — lifecycle events (PR 20)', () => {
+  const leaseRecord = (id: string, jobId: string) => ({
+    id,
+    jobId,
+    workerId: 'worker-ev',
+    status: 'ACTIVE' as const,
+    durationMs: 30000,
+    acquiredAt: new Date(),
+    renewedAt: new Date(),
+    expiresAt: new Date(Date.now() + 30000),
+    createdAt: new Date(),
+  });
+
+  const leaseRepoFor = (lease: ReturnType<typeof leaseRecord>) => ({
+    claim: vi.fn(),
+    renew: vi.fn(),
+    release: vi
+      .fn()
+      .mockResolvedValue({ status: 'RELEASED', leaseId: lease.id, jobId: lease.jobId }),
+    findActiveByJobId: vi.fn().mockResolvedValue(lease),
+    findById: vi.fn(),
+    findByWorkerId: vi.fn(),
+    reclaimExpiredLeases: vi.fn(),
+  });
+
+  const jobRepoRecording = () => {
+    const saved: unknown[] = [];
+    return {
+      repo: {
+        save: vi.fn(async (j: unknown) => {
+          saved.push(j);
+        }),
+        findById: vi.fn(),
+        findByPipelineRunId: vi.fn(),
+      },
+      saved,
+    };
+  };
+
+  const mockAttempt = (id: string, attemptNumber = 1) => ({
+    id,
+    attemptNumber,
+    status: 'RUNNING' as string,
+    start: vi.fn(),
+    succeed: vi.fn(),
+    fail: vi.fn(),
+    timeout: vi.fn(),
+    cancel: vi.fn(),
+  });
+
+  const mockJob = (
+    id: string,
+    attempt: ReturnType<typeof mockAttempt>,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    id,
+    pipelineRunId: 'run-ev',
+    command: 'echo ev',
+    priority: 0,
+    status: 'QUEUED',
+    createAttempt: vi.fn().mockReturnValue(attempt),
+    start: vi.fn(),
+    succeed: vi.fn(),
+    fail: vi.fn(),
+    timeout: vi.fn(),
+    cancel: vi.fn(),
+    transitionTo: vi.fn(),
+    setNextAttemptAt: vi.fn(),
+    clearNextAttemptAt: vi.fn(),
+    ...extra,
+  });
+
+  const execResult = (over: Partial<Record<string, unknown>> = {}) => ({
+    status: 'SUCCEEDED',
+    exitCode: 0,
+    startedAt: new Date(),
+    finishedAt: new Date(),
+    durationMs: 120,
+    stdout: '',
+    stderr: '',
+    truncated: false,
+    ...over,
+  });
+
+  const collectorBus = () => {
+    const bus = new InProcessEventBus();
+    const events: ForgeEvent[] = [];
+    bus.subscribe((e) => void events.push(e));
+    return { bus, events };
+  };
+
+  it('emits JobStarted -> JobLogChunk -> JobSucceeded on a successful execution', async () => {
+    const { bus, events } = collectorBus();
+    const lease = leaseRecord('lease-ev-1', 'job-ev-1');
+    const attempt = mockAttempt('job-ev-1-attempt-1');
+    const { repo } = jobRepoRecording();
+
+    const worker = startWorker({
+      workerId: 'worker-ev',
+      leaseRepository: leaseRepoFor(lease),
+      jobRepository: repo as unknown as JobRepository,
+      executor: {
+        name: 'mock',
+        isAvailable: vi.fn().mockResolvedValue(true),
+        execute: vi
+          .fn()
+          .mockResolvedValue(execResult({ stdout: 'build ok\n', stderr: '', durationMs: 250 })),
+      } as unknown as Executor,
+      eventPublisher: bus,
+    });
+
+    await worker.executeJob({
+      job: mockJob('job-ev-1', attempt) as unknown as Job,
+      leaseId: 'lease-ev-1',
+    });
+
+    expect(events.map((e) => e.event_type)).toEqual(['JobStarted', 'JobLogChunk', 'JobSucceeded']);
+    const started = events[0];
+    expect(started).toMatchObject({
+      event_type: 'JobStarted',
+      run_id: 'run-ev',
+      job_id: 'job-ev-1',
+      attempt_id: 'job-ev-1-attempt-1',
+      worker_id: 'worker-ev',
+      payload: { attempt_number: 1 },
+    });
+    const chunk = events[1];
+    expect(chunk).toMatchObject({
+      event_type: 'JobLogChunk',
+      payload: {
+        stream: 'stdout',
+        sequence: 0,
+        chunk: 'build ok\n',
+        final: true,
+        truncated: false,
+      },
+    });
+    const succeeded = events[2];
+    expect(succeeded).toMatchObject({
+      event_type: 'JobSucceeded',
+      payload: { job_id: 'job-ev-1', worker_id: 'worker-ev', duration_ms: 250, exit_code: 0 },
+    });
+    await bus.close();
+  });
+
+  it('emits JobFailed with failure_kind FAILED and retry_scheduled false when a non-retryable attempt fails', async () => {
+    const { bus, events } = collectorBus();
+    const lease = leaseRecord('lease-ev-2', 'job-ev-2');
+    const attempt = mockAttempt('job-ev-2-attempt-1');
+    const { repo } = jobRepoRecording();
+
+    const worker = startWorker({
+      workerId: 'worker-ev',
+      leaseRepository: leaseRepoFor(lease),
+      jobRepository: repo as unknown as JobRepository,
+      executor: {
+        name: 'mock',
+        isAvailable: vi.fn().mockResolvedValue(true),
+        execute: vi.fn().mockResolvedValue(
+          execResult({
+            status: 'FAILED',
+            exitCode: 7,
+            failureReason: 'Process exited with code 7',
+            stderr: 'boom',
+          }),
+        ),
+      } as unknown as Executor,
+      eventPublisher: bus,
+    });
+
+    await worker.executeJob({
+      job: mockJob('job-ev-2', attempt) as unknown as Job,
+      leaseId: 'lease-ev-2',
+    });
+
+    const failed = events.find((e) => e.event_type === 'JobFailed');
+    expect(failed).toMatchObject({
+      event_type: 'JobFailed',
+      payload: {
+        job_id: 'job-ev-2',
+        failure_kind: 'FAILED',
+        reason: 'Process exited with code 7',
+        exit_code: 7,
+        retry_scheduled: false,
+      },
+    });
+    expect(events.some((e) => e.event_type === 'JobQueued')).toBe(false);
+    await bus.close();
+  });
+
+  it('emits JobCancelled when the execution is cancelled', async () => {
+    const { bus, events } = collectorBus();
+    const lease = leaseRecord('lease-ev-3', 'job-ev-3');
+    const attempt = mockAttempt('job-ev-3-attempt-1');
+
+    const worker = startWorker({
+      workerId: 'worker-ev',
+      leaseRepository: leaseRepoFor(lease),
+      jobRepository: jobRepoRecording().repo as unknown as JobRepository,
+      executor: {
+        name: 'mock',
+        isAvailable: vi.fn().mockResolvedValue(true),
+        execute: vi
+          .fn()
+          .mockResolvedValue(
+            execResult({ status: 'CANCELLED', exitCode: null, failureReason: 'cancelled' }),
+          ),
+      } as unknown as Executor,
+      eventPublisher: bus,
+    });
+
+    await worker.executeJob({
+      job: mockJob('job-ev-3', attempt) as unknown as Job,
+      leaseId: 'lease-ev-3',
+    });
+
+    expect(events.map((e) => e.event_type)).toContain('JobCancelled');
+    expect(events.find((e) => e.event_type === 'JobCancelled')).toMatchObject({
+      payload: { job_id: 'job-ev-3', worker_id: 'worker-ev', attempt_number: 1 },
+    });
+    await bus.close();
+  });
+
+  it('classifies a wall-clock timeout as JobFailed failure_kind TIMED_OUT', async () => {
+    const { bus, events } = collectorBus();
+    const lease = leaseRecord('lease-ev-4', 'job-ev-4');
+    const attempt = mockAttempt('job-ev-4-attempt-1');
+
+    const worker = startWorker({
+      workerId: 'worker-ev',
+      leaseRepository: leaseRepoFor(lease),
+      jobRepository: jobRepoRecording().repo as unknown as JobRepository,
+      executor: {
+        name: 'mock',
+        isAvailable: vi.fn().mockResolvedValue(true),
+        execute: vi.fn().mockResolvedValue(
+          execResult({
+            status: 'TIMED_OUT',
+            exitCode: null,
+            failureReason: 'Execution timed out after 1000ms',
+          }),
+        ),
+      } as unknown as Executor,
+      eventPublisher: bus,
+    });
+
+    await worker.executeJob({
+      job: mockJob('job-ev-4', attempt) as unknown as Job,
+      leaseId: 'lease-ev-4',
+    });
+
+    expect(events.find((e) => e.event_type === 'JobFailed')).toMatchObject({
+      payload: { failure_kind: 'TIMED_OUT', exit_code: null, retry_scheduled: false },
+    });
+    await bus.close();
+  });
+
+  it('emits JobFailed(retry_scheduled) followed by JobQueued when a retry is scheduled', async () => {
+    const { bus, events } = collectorBus();
+    const lease = leaseRecord('lease-ev-5', 'job-ev-5');
+    const attempt = {
+      ...mockAttempt('job-ev-5-attempt-1'),
+      fail: vi.fn(),
+    };
+    // real evaluateRetry needs attempt.status to be FAILED after fail()
+    attempt.fail = vi.fn().mockImplementation(() => {
+      attempt.status = 'FAILED';
+    });
+
+    const worker = startWorker({
+      workerId: 'worker-ev',
+      leaseRepository: leaseRepoFor(lease),
+      jobRepository: jobRepoRecording().repo as unknown as JobRepository,
+      executor: {
+        name: 'mock',
+        isAvailable: vi.fn().mockResolvedValue(true),
+        execute: vi.fn().mockResolvedValue(
+          execResult({
+            status: 'FAILED',
+            exitCode: 1,
+            failureReason: 'Process exited with code 1',
+          }),
+        ),
+      } as unknown as Executor,
+      eventPublisher: bus,
+    });
+
+    const job = mockJob('job-ev-5', attempt, {
+      retryPolicy: {
+        maxAttempts: 3,
+        backoff: { baseDelayMs: 1000, factor: 2, maxDelayMs: 10000 },
+        retryOn: ['FAILED' as const],
+      },
+      nextAttemptAt: new Date('2026-09-08T12:05:00.000Z'),
+    });
+
+    await worker.executeJob({ job: job as unknown as Job, leaseId: 'lease-ev-5' });
+
+    const types = events.map((e) => e.event_type);
+    expect(types).toContain('JobFailed');
+    expect(types).toContain('JobQueued');
+    expect(types.indexOf('JobFailed')).toBeLessThan(types.indexOf('JobQueued'));
+    expect(events.find((e) => e.event_type === 'JobFailed')).toMatchObject({
+      payload: { retry_scheduled: true, failure_kind: 'FAILED' },
+    });
+    expect(events.find((e) => e.event_type === 'JobQueued')).toMatchObject({
+      payload: { job_id: 'job-ev-5', run_id: 'run-ev', attempt_number: 2 },
+    });
+    await bus.close();
+  });
+
+  it('emits WorkerRegistered and WorkerHeartbeat with correct worker identity', async () => {
+    const { bus, events } = collectorBus();
+    const registry: WorkerRegistry = {
+      register: vi.fn(async (input: RegisterWorkerInput): Promise<WorkerMetadata> => ({
+        workerId: createWorkerId(input.workerId ?? 'w'),
+        status: 'READY',
+        hostname: input.hostname,
+        capabilities: input.capabilities,
+        resources: input.resources,
+        registeredAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })),
+      heartbeat: vi.fn(async (): Promise<void> => undefined),
+      deregister: vi.fn(async (): Promise<void> => undefined),
+      getWorker: vi.fn(),
+      listWorkers: vi.fn(),
+    };
+
+    const worker = startWorker({
+      workerId: 'worker-ev-reg',
+      registry,
+      heartbeatIntervalMs: 15,
+      capabilities: { executors: ['docker', 'shell'] },
+      resources: { cpuCores: 8, memoryBytes: 42 },
+      eventPublisher: bus,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await worker.stop();
+
+    const registered = events.find((e) => e.event_type === 'WorkerRegistered');
+    expect(registered).toMatchObject({
+      event_type: 'WorkerRegistered',
+      worker_id: 'worker-ev-reg',
+      payload: {
+        worker_id: 'worker-ev-reg',
+        capabilities: ['docker', 'shell'],
+        cpu_cores: 8,
+        memory_bytes: 42,
+      },
+    });
+    const heartbeats = events.filter((e) => e.event_type === 'WorkerHeartbeat');
+    expect(heartbeats.length).toBeGreaterThanOrEqual(1);
+    expect(heartbeats[0]).toMatchObject({
+      worker_id: 'worker-ev-reg',
+      payload: { worker_id: 'worker-ev-reg', status: 'READY' },
+    });
+    await bus.close();
+  });
+
+  it('a failing publisher never breaks execution and the failure is logged', async () => {
+    const logs: string[] = [];
+    const logger = createLogger({
+      service: 'worker',
+      environment: 'test',
+      writeFn: (m) => logs.push(m),
+    });
+    const lease = leaseRecord('lease-ev-6', 'job-ev-6');
+    const { repo, saved } = jobRepoRecording();
+    const attempt = mockAttempt('job-ev-6-attempt-1');
+
+    const worker = startWorker({
+      workerId: 'worker-ev',
+      logger,
+      leaseRepository: leaseRepoFor(lease),
+      jobRepository: repo as unknown as JobRepository,
+      executor: {
+        name: 'mock',
+        isAvailable: vi.fn().mockResolvedValue(true),
+        execute: vi.fn().mockResolvedValue(execResult({ stdout: 'ok' })),
+      } as unknown as Executor,
+      eventPublisher: { publish: vi.fn().mockRejectedValue(new Error('bus offline')) },
+    });
+
+    const { result } = await worker.executeJob({
+      job: mockJob('job-ev-6', attempt) as unknown as Job,
+      leaseId: 'lease-ev-6',
+    });
+
+    expect(result.status).toBe('SUCCEEDED');
+    expect(saved.length).toBeGreaterThan(0);
+    expect(logs.some((l) => l.includes('Event publication failed'))).toBe(true);
+  });
+
+  it('emits nothing and behaves normally when no eventPublisher is configured', async () => {
+    const lease = leaseRecord('lease-ev-7', 'job-ev-7');
+    const attempt = mockAttempt('job-ev-7-attempt-1');
+    const worker = startWorker({
+      workerId: 'worker-ev',
+      leaseRepository: leaseRepoFor(lease),
+      jobRepository: jobRepoRecording().repo as unknown as JobRepository,
+      executor: {
+        name: 'mock',
+        isAvailable: vi.fn().mockResolvedValue(true),
+        execute: vi.fn().mockResolvedValue(execResult({ stdout: 'ok' })),
+      } as unknown as Executor,
+    });
+
+    const { result } = await worker.executeJob({
+      job: mockJob('job-ev-7', attempt) as unknown as Job,
+      leaseId: 'lease-ev-7',
+    });
+    expect(result.status).toBe('SUCCEEDED');
   });
 });

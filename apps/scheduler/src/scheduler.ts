@@ -10,6 +10,12 @@ import {
 } from '@forge/contracts';
 import type { Logger } from '@forge/logging';
 import {
+  createForgeEvent,
+  safePublish,
+  type EventPublisher,
+  type WorkerLostRecoveryAction,
+} from '@forge/events';
+import {
   checkJobRequirementsValidity,
   createJobId,
   filterEligibleWorkers,
@@ -287,6 +293,7 @@ export class ForgeScheduler implements Scheduler {
   private readonly leaseBatchSize: number;
   private readonly recoveryService?: LeaseRecoveryService;
   private readonly logger?: Logger;
+  private readonly eventPublisher?: EventPublisher;
   private recoveryTimer?: NodeJS.Timeout;
   private isSweeping = false;
 
@@ -301,6 +308,36 @@ export class ForgeScheduler implements Scheduler {
     this.leaseBatchSize = options?.leaseBatchSize ?? DEFAULT_LEASE_BATCH_SIZE;
     this.recoveryService = options?.recoveryService;
     this.logger = options?.logger;
+    this.eventPublisher = options?.eventPublisher;
+  }
+
+  /**
+   * Publishes a `JobClaimed` lifecycle event after a lease has been atomically acquired and
+   * the placement decision committed. Best-effort: never throws, never blocks placement.
+   * The scheduler is the authoritative producer of `JobClaimed` (invariants §13.1 —
+   * placement + lease claiming is the scheduler's responsibility).
+   */
+  private async publishJobClaimed(
+    jobId: string,
+    workerId: string,
+    lease: { readonly id: string; readonly expiresAt: Date },
+  ): Promise<void> {
+    if (!this.eventPublisher) {
+      return;
+    }
+    await safePublish(
+      this.eventPublisher,
+      createForgeEvent('JobClaimed', {
+        correlation: { job_id: jobId, worker_id: workerId },
+        payload: {
+          job_id: jobId,
+          worker_id: workerId,
+          lease_id: lease.id,
+          lease_expires_at: lease.expiresAt.toISOString(),
+        },
+      }),
+      this.logger,
+    );
   }
 
   /**
@@ -482,6 +519,7 @@ export class ForgeScheduler implements Scheduler {
                 expiresAt: itemRes.lease.expiresAt,
               });
               decisionMap.set(dec.jobId, decisionWithLease);
+              await this.publishJobClaimed(dec.jobId, dec.workerId, itemRes.lease);
             } else if (itemRes && itemRes.status === 'CONFLICT') {
               const unschedulable: UnschedulableDecision = {
                 status: 'UNSCHEDULABLE',
@@ -637,6 +675,7 @@ export class ForgeScheduler implements Scheduler {
         leaseId: claimResult.lease.id,
         expiresAt: claimResult.lease.expiresAt,
       });
+      await this.publishJobClaimed(decision.jobId, decision.workerId, claimResult.lease);
       return decisionWithLease;
     }
 
@@ -800,7 +839,44 @@ export class ForgeScheduler implements Scheduler {
     if (!this.recoveryService) {
       throw new Error('LeaseRecoveryService is required to recover expired leases');
     }
-    return this.recoveryService.recoverExpiredLeases(options);
+    const result = await this.recoveryService.recoverExpiredLeases(options);
+    await this.publishWorkerLostForRecovery(result);
+    return result;
+  }
+
+  /**
+   * Publishes one `WorkerLost` event per lease actually reconciled by a recovery sweep.
+   * Idempotent `NO_OP` reconciliations (a concurrent runner already handled the lease) do
+   * not emit. Best-effort — a publication failure never changes the recovery outcome.
+   */
+  private async publishWorkerLostForRecovery(result: RecoverExpiredLeasesResult): Promise<void> {
+    if (!this.eventPublisher) {
+      return;
+    }
+    const emittableActions: readonly WorkerLostRecoveryAction[] = [
+      'REQUEUED',
+      'DEAD_LETTERED',
+      'SKIPPED_TERMINAL',
+    ];
+    for (const record of result.details) {
+      if (!emittableActions.includes(record.action as WorkerLostRecoveryAction)) {
+        continue;
+      }
+      await safePublish(
+        this.eventPublisher,
+        createForgeEvent('WorkerLost', {
+          correlation: { job_id: record.jobId, worker_id: record.workerId },
+          payload: {
+            worker_id: record.workerId,
+            job_id: record.jobId,
+            lease_id: record.leaseId,
+            recovery_action: record.action as WorkerLostRecoveryAction,
+            ...(record.deadLetterReason ? { dead_letter_reason: record.deadLetterReason } : {}),
+          },
+        }),
+        this.logger,
+      );
+    }
   }
 
   /**

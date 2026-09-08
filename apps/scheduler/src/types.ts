@@ -9,6 +9,7 @@ import type {
   UnschedulableReason,
 } from '@forge/contracts';
 import type { LeaseRecoveryService, WorkerLeaseRepository } from '@forge/database';
+import type { EventPublisher } from '@forge/events';
 import type { Logger } from '@forge/logging';
 import type { Job, WorkerCandidate } from '@forge/pipeline';
 import type { WorkerLiveness, WorkerStatus } from '@forge/worker-registry';
@@ -144,4 +145,11 @@ export interface SchedulerOptions {
   readonly leaseBatchSize?: number;
   readonly recoveryService?: LeaseRecoveryService;
   readonly logger?: Logger;
+  /**
+   * Optional typed lifecycle event publisher. When set, the scheduler emits `JobClaimed`
+   * on every successful lease acquisition and `WorkerLost` for each lease reconciled by a
+   * recovery sweep. Publication is best-effort and never affects placement or recovery
+   * outcomes. When omitted, the scheduler behaves exactly as before (no events).
+   */
+  readonly eventPublisher?: EventPublisher;
 }
