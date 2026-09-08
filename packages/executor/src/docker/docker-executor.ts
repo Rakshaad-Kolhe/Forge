@@ -78,15 +78,38 @@ export class DockerExecutor implements Executor {
    * Executes a single job attempt within an ephemeral Docker container.
    */
   public async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    if (!context.command || context.command.trim().length === 0) {
+      throw new Error('Invalid execution context: command must be a non-empty string');
+    }
+
+    if (
+      context.timeoutMs !== undefined &&
+      (context.timeoutMs <= 0 || !Number.isFinite(context.timeoutMs))
+    ) {
+      throw new Error(
+        `Invalid timeoutMs: must be a positive finite number, received ${context.timeoutMs}`,
+      );
+    }
+
+    // Pre-validate environment variable names prior to provisioning ephemeral workspace
+    if (context.environment) {
+      for (const key of Object.keys(context.environment)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          throw new Error(`Invalid environment variable name: "${key}"`);
+        }
+      }
+    }
+
     const startedAt = new Date();
     const executionId = `${context.jobId}-${context.attemptId}-${crypto.randomUUID().slice(0, 8)}`;
     const containerName = `forge-exec-${executionId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
-    this.logger.info('Starting containerized job execution', {
+    this.logger.info('Execution requested', {
       jobId: context.jobId,
       attemptId: context.attemptId,
       workerId: context.workerId,
       containerName,
+      executionId,
     });
 
     // 1. Prepare isolated temporary workspace
@@ -111,6 +134,14 @@ export class DockerExecutor implements Executor {
       `${workspace.dockerMountPath}:/workspace:rw`,
       '-w',
       '/workspace',
+      '--label',
+      'forge.managed=true',
+      '--label',
+      `forge.execution_id=${executionId}`,
+      '--label',
+      `forge.job_id=${context.jobId}`,
+      '--label',
+      `forge.attempt_id=${context.attemptId}`,
     ];
 
     // Resource limits
@@ -124,9 +155,6 @@ export class DockerExecutor implements Executor {
     // Environment variables
     if (context.environment) {
       for (const [key, value] of Object.entries(context.environment)) {
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-          throw new Error(`Invalid environment variable name: "${key}"`);
-        }
         dockerArgs.push('--env', `${key}=${value}`);
       }
     }
@@ -141,6 +169,14 @@ export class DockerExecutor implements Executor {
     let abortListener: (() => void) | undefined;
     const env = this.getSpawnEnv();
 
+    this.logger.info('Container starting', {
+      jobId: context.jobId,
+      attemptId: context.attemptId,
+      workerId: context.workerId,
+      containerName,
+      image,
+    });
+
     try {
       const exitCode = await new Promise<number | null>((resolve, reject) => {
         const proc = spawn('docker', dockerArgs, {
@@ -148,13 +184,21 @@ export class DockerExecutor implements Executor {
           windowsHide: true,
         });
 
+        this.logger.info('Container started', {
+          jobId: context.jobId,
+          attemptId: context.attemptId,
+          workerId: context.workerId,
+          containerName,
+        });
+
         // Hard wall-clock timeout
         timeoutTimer = setTimeout(() => {
           timedOut = true;
-          this.logger.warn('Execution exceeded timeout limit, stopping container', {
+          this.logger.warn('Execution timed out, stopping container', {
             containerName,
             timeoutMs,
             jobId: context.jobId,
+            attemptId: context.attemptId,
           });
           void this.terminateContainer(containerName);
         }, timeoutMs);
@@ -163,6 +207,11 @@ export class DockerExecutor implements Executor {
         if (context.abortSignal) {
           if (context.abortSignal.aborted) {
             cancelled = true;
+            this.logger.info('Execution cancelled immediately via pre-aborted signal', {
+              containerName,
+              jobId: context.jobId,
+              attemptId: context.attemptId,
+            });
             void this.terminateContainer(containerName);
           } else {
             abortListener = () => {
@@ -170,6 +219,7 @@ export class DockerExecutor implements Executor {
               this.logger.info('Execution cancelled via abort signal, stopping container', {
                 containerName,
                 jobId: context.jobId,
+                attemptId: context.attemptId,
               });
               void this.terminateContainer(containerName);
             };
@@ -215,27 +265,49 @@ export class DockerExecutor implements Executor {
       let status: ExecutionStatus;
       let failureReason: string | undefined;
 
-      if (timedOut) {
-        status = 'TIMED_OUT';
-        failureReason = `Execution timed out after ${timeoutMs}ms`;
-      } else if (cancelled) {
+      // Deterministic precedence: cancellation > timeout > exitCode
+      if (cancelled) {
         status = 'CANCELLED';
         failureReason = 'Execution was cancelled by abort signal';
+        this.logger.info('Execution cancelled', {
+          jobId: context.jobId,
+          attemptId: context.attemptId,
+          containerName,
+          durationMs,
+        });
+      } else if (timedOut) {
+        status = 'TIMED_OUT';
+        failureReason = `Execution timed out after ${timeoutMs}ms`;
+        this.logger.warn('Execution failed due to timeout', {
+          jobId: context.jobId,
+          attemptId: context.attemptId,
+          containerName,
+          timeoutMs,
+          durationMs,
+        });
       } else if (exitCode === 0) {
         status = 'SUCCEEDED';
+        this.logger.info('Execution completed successfully', {
+          jobId: context.jobId,
+          attemptId: context.attemptId,
+          status,
+          exitCode,
+          durationMs,
+          truncated,
+        });
       } else {
         status = 'FAILED';
         failureReason = `Process exited with code ${exitCode}`;
+        this.logger.warn('Execution failed', {
+          jobId: context.jobId,
+          attemptId: context.attemptId,
+          status,
+          exitCode,
+          failureReason,
+          durationMs,
+          truncated,
+        });
       }
-
-      this.logger.info('Containerized job execution completed', {
-        jobId: context.jobId,
-        attemptId: context.attemptId,
-        status,
-        exitCode,
-        durationMs,
-        truncated,
-      });
 
       return {
         status,
@@ -257,8 +329,22 @@ export class DockerExecutor implements Executor {
       }
 
       // Guaranteed cleanup: remove container and delete workspace
-      await this.cleanupContainer(containerName);
-      await cleanupWorkspace(workspace.hostPath);
+      const cleanupStart = Date.now();
+      try {
+        await this.cleanupContainer(containerName);
+        await cleanupWorkspace(workspace.hostPath, this.workspaceBaseDir);
+        this.logger.info('Cleanup completed', {
+          containerName,
+          workspacePath: workspace.hostPath,
+          cleanupDurationMs: Date.now() - cleanupStart,
+        });
+      } catch (cleanupErr) {
+        this.logger.error('Cleanup failed', {
+          containerName,
+          workspacePath: workspace.hostPath,
+          error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+        });
+      }
     }
   }
 
@@ -266,6 +352,10 @@ export class DockerExecutor implements Executor {
    * Forcibly stops a running container during timeout or cancellation.
    */
   private async terminateContainer(containerName: string): Promise<void> {
+    if (!containerName.startsWith('forge-exec-')) {
+      return;
+    }
+
     return new Promise((resolve) => {
       const env = this.getSpawnEnv();
       // Send SIGTERM with a 2-second grace period before Docker issues SIGKILL
@@ -305,6 +395,13 @@ export class DockerExecutor implements Executor {
    * Forcibly removes a container after completion.
    */
   private async cleanupContainer(containerName: string): Promise<void> {
+    if (!containerName.startsWith('forge-exec-')) {
+      this.logger.warn('Refusing to cleanup container without forge-exec- prefix', {
+        containerName,
+      });
+      return;
+    }
+
     return new Promise((resolve) => {
       const env = this.getSpawnEnv();
       const rmProc = spawn('docker', ['rm', '-f', containerName], {

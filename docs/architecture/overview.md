@@ -111,5 +111,7 @@ PR 01: Repository Foundation & Architecture Contract (Completed)
   │
   ├──► PR 17: Scheduler Benchmarking & Performance Validation (Completed)
   │
-  └──► PR 18: Batched Worker Lease Claiming & Persistent Optimization (Current)
+  ├──► PR 18: Batched Worker Lease Claiming & Persistent Optimization (Completed)
+  │
+  └──► PR 19: Execution Engine Foundation & Docker Executor (Current)
 ```

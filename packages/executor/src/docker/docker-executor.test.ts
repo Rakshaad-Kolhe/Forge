@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildResourceArgs, MIN_DOCKER_MEMORY_BYTES } from './resource-mapper.js';
 import { cleanupWorkspace, createWorkspace, toDockerBindMountPath } from './workspace.js';
 import { OutputCollector } from './output-stream.js';
+import { DockerExecutor } from './docker-executor.js';
 import fs from 'node:fs/promises';
 
 describe('Resource Mapper', () => {
@@ -96,6 +97,22 @@ describe('Workspace Management', () => {
     // Idempotent second call should not throw
     await expect(cleanupWorkspace(ws.hostPath)).resolves.not.toThrow();
   });
+
+  it('rejects directory traversal attempts in executionId', async () => {
+    await expect(createWorkspace('../escape-path')).rejects.toThrow(/directory traversal tokens/);
+    await expect(createWorkspace('..\\escape-win')).rejects.toThrow(/directory traversal tokens/);
+    await expect(createWorkspace('/root/escape')).rejects.toThrow(/directory traversal tokens/);
+  });
+
+  it('rejects empty or whitespace-only executionId', async () => {
+    await expect(createWorkspace('')).rejects.toThrow(/non-empty string/);
+  });
+
+  it('prevents cleanupWorkspace from deleting outside designated workspace base directory', async () => {
+    // Attempting to delete root or unrelated directory
+    await expect(cleanupWorkspace('/etc')).rejects.toThrow(/Security error/);
+    await expect(cleanupWorkspace('C:\\Windows')).rejects.toThrow(/Security error/);
+  });
 });
 
 describe('Output Collector', () => {
@@ -118,5 +135,87 @@ describe('Output Collector', () => {
     collector.pushStdout('extra data');
     expect(collector.truncated).toBe(true);
     expect(collector.getStdout()).toBe('1234567890');
+  });
+});
+
+describe('DockerExecutor Request Validation', () => {
+  const executor = new DockerExecutor();
+
+  it('rejects empty or whitespace command', async () => {
+    await expect(
+      executor.execute({
+        jobId: 'job-val-1',
+        attemptId: 'att-1',
+        workerId: 'worker-1',
+        command: '',
+      }),
+    ).rejects.toThrow(/command must be a non-empty string/);
+
+    await expect(
+      executor.execute({
+        jobId: 'job-val-1',
+        attemptId: 'att-1',
+        workerId: 'worker-1',
+        command: '   ',
+      }),
+    ).rejects.toThrow(/command must be a non-empty string/);
+  });
+
+  it('rejects non-positive or non-finite timeoutMs', async () => {
+    await expect(
+      executor.execute({
+        jobId: 'job-val-2',
+        attemptId: 'att-1',
+        workerId: 'worker-1',
+        command: 'echo test',
+        timeoutMs: 0,
+      }),
+    ).rejects.toThrow(/positive finite number/);
+
+    await expect(
+      executor.execute({
+        jobId: 'job-val-2',
+        attemptId: 'att-1',
+        workerId: 'worker-1',
+        command: 'echo test',
+        timeoutMs: -500,
+      }),
+    ).rejects.toThrow(/positive finite number/);
+
+    await expect(
+      executor.execute({
+        jobId: 'job-val-2',
+        attemptId: 'att-1',
+        workerId: 'worker-1',
+        command: 'echo test',
+        timeoutMs: NaN,
+      }),
+    ).rejects.toThrow(/positive finite number/);
+  });
+
+  it('rejects invalid environment variable names', async () => {
+    await expect(
+      executor.execute({
+        jobId: 'job-val-3',
+        attemptId: 'att-1',
+        workerId: 'worker-1',
+        command: 'echo test',
+        environment: {
+          'INVALID-NAME!': 'value',
+        },
+      }),
+    ).rejects.toThrow(/Invalid environment variable name/);
+
+    await expect(
+      executor.execute({
+        jobId: 'job-val-3',
+        attemptId: 'att-1',
+        workerId: 'worker-1',
+        command: 'echo test',
+        environment: {
+          '123_STARTS_WITH_DIGIT': 'value',
+        },
+      }),
+    ).rejects.toThrow(/Invalid environment variable name/);
   });
 });

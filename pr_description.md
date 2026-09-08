@@ -1,110 +1,198 @@
-# PR 18: Batched Worker Lease Claiming & Persistent Scheduler Optimization
+# PR 19: Execution Engine Foundation & Docker Executor
 
-## Summary
+## 1. Repository Inspection
 
-This pull request implements **PR 18: Batched Worker Lease Claiming & Persistent Scheduler Optimization** for Forge V2.
+Prior to introducing new abstractions, the repository was inspected across all packages and services:
 
-In PR 17, comprehensive benchmark profiling revealed that Forge V2's in-memory scheduling algorithms are microsecond-fast (< 2.1 ms for 100 jobs), but persistent scheduling throughput was strictly throttled by serial single-job PostgreSQL transactions (~9.2 ms per lease, ~462 ms for a batch of 50 jobs, bounding persistent throughput to ~70 leased jobs/second).
-
-PR 18 directly resolves this bottleneck by implementing **batched worker lease claiming** (`claimBatch`) in `@forge/database` and integrating bounded batched claiming into `ForgeScheduler.schedulePrioritized`.
-
-This optimization:
-1. **Reduces Database Round Trips from $O(N)$ to $O(1)$**: Consolidates 50 separate database transactions and ~250 round trips into a single atomic transaction and ~5 round trips.
-2. **Guarantees Deadlock-Free Concurrency**: Enforces canonical ascending ID ordering (`ORDER BY id ASC FOR UPDATE`) on both jobs and active leases, eliminating cyclic lock dependency deadlocks when concurrent schedulers or workers compete for overlapping job sets in reverse or shuffled order.
-3. **Preserves Safe Partial Success**: Evaluates each job in the batch independently, returning granular per-job outcomes (`ACQUIRED`, `CONFLICT`, `NOT_CLAIMABLE`) matching input order without failing valid claim candidates.
-4. **Handles Bulk Stale Lease Replacement**: Identifies and transitions expired active leases (`expires_at <= NOW()`) to `EXPIRED` in bulk before inserting new active leases, preserving the partial unique index `uq_worker_leases_active_job`.
-5. **Enforces Bounded Batch Chunking**: Partitions batch operations into chunks governed by `DEFAULT_LEASE_BATCH_SIZE = 50` (configurable via `leaseBatchSize` on `SchedulerOptions`), preventing connection starvation or runaway transaction locks.
-6. **Maintains 100% Backward-Compatible Fallback & Strict Semantic Equivalence**: If a lease repository does not implement `claimBatch`, the scheduler automatically falls back to sequential single-lease claiming. The output `PrioritizedScheduleResult` is provably identical in decision structure, scheduled state, worker assignments, priorities, and unschedulable reasons.
-7. **Empirically Proven Speedup**: Delivers an empirical **5.76x speedup** (from 462.4 ms down to 80.2 ms for 50 jobs, an **82.7% latency reduction**) and reduces per-lease database latency from **11.45 ms/job down to 0.15 ms/job (a 76x per-lease latency reduction)**.
+- **`packages/contracts`**: Identified existing core execution contracts (`Executor`, `ExecutionContext`, `ExecutionResult`, `ExecutionStatus`) and retry models (`RetryPolicy`, `RetryDecision`).
+- **`packages/executor`**: Inspected existing `DockerExecutor` implementation, resource mapper (`buildResourceArgs`), output collector (`OutputCollector`), and workspace utilities (`createWorkspace`, `cleanupWorkspace`).
+- **`apps/worker`**: Inspected `WorkerShell` and its `executeJob` flow, validating that lease ownership (`findActiveByJobId`) and attempt creation/persistence occur before container invocation, and that lease release happens after transactional persistence.
+- **`packages/pipeline`**: Inspected `Job` and `JobAttempt` state machines and pure retry evaluation (`evaluateRetry`).
+- **Docker Environment**: Verified live Docker runtime (Docker version 29.1.3 running in Ubuntu WSL2 on `tcp://127.0.0.1:2375`). Live integration tests, security tests, concurrency tests, and worker execution tests all run against this daemon.
 
 ---
 
-## Empirical Benchmark Performance Data
+## 2. Architecture
 
-_Environment: Windows 11 (`win32 x64`), Intel Core i7-14650HX (24 threads, 16 physical cores), 16 GB RAM, PostgreSQL 18.6, Redis 8.0.5, Node.js v25.2.1._
+The execution plane is strictly separated from scheduling:
 
-### 1. Persistent Batch Placement Comparison (`schedulePrioritized`)
-
-Measured side-by-side in identical runtime environments across identical deterministic workloads:
-
-| Batch Size ($N$) | Sequential Baseline Mean | Sequential P50 | Batched Optimized Mean | Batched P50 | Batched P95 | Latency Delta | Throughput Speedup |
-| :--------------- | :----------------------- | :------------- | :--------------------- | :---------- | :---------- | :------------ | :----------------- |
-| **Batch 10**     | 100.02 ms                | 101.42 ms      | **30.13 ms**           | **29.86 ms**| 32.30 ms    | **-69.9%**    | **3.32x**          |
-| **Batch 25**     | 243.97 ms                | 250.60 ms      | **54.56 ms**           | **57.60 ms**| 62.50 ms    | **-77.6%**    | **4.47x**          |
-| **Batch 50**     | 462.40 ms                | 465.93 ms      | **80.23 ms**           | **76.72 ms**| 103.26 ms   | **-82.7%**    | **5.76x**          |
-
-### 2. Component Lease Acquisition Overhead
-
-| Lease Operation Type                 | Samples | Total Duration (Mean) | Effective Latency Per Lease | Throughput (Leases/Sec) |
-| :----------------------------------- | :------ | :-------------------- | :-------------------------- | :---------------------- |
-| **Single Uncontended Claim (PR 12)** | 50      | 8.77 ms               | 8.77 ms / lease             | 114.0 leases/sec        |
-| **Batched Claim ($N=10$)**           | 10      | 5.92 ms               | **0.59 ms / lease**         | 1,689 leases/sec        |
-| **Batched Claim ($N=25$)**           | 10      | 7.49 ms               | **0.30 ms / lease**         | 3,338 leases/sec        |
-| **Batched Claim ($N=50$)**           | 10      | 7.43 ms               | **0.15 ms / lease**         | 6,729 leases/sec        |
-| **Batched Contended Conflict ($N=25$)** | 10   | 4.61 ms               | **0.18 ms / lease**         | 5,423 conflicts/sec     |
-
----
-
-## Query Explain Plans (`EXPLAIN`)
-
-### 1. Batched Job Row Lock (`claimBatch`)
-```sql
-SELECT id, status FROM jobs
-WHERE id = ANY($1::text[])
-ORDER BY id ASC FOR UPDATE;
+```text
+Scheduler (Decides whether / where)
+    ↓
+Worker (Owns lease ownership & lifecycle orchestration)
+    ↓
+Execution Engine (Pluggable Executor abstraction)
+    ↓
+Executor (DockerExecutor)
+    ↓
+Docker Daemon (Isolated unprivileged ephemeral container)
 ```
-- **Plan**: `LockRows -> Sort (Sort Key: id ASC) -> Seq Scan / Index Scan on jobs`.
-- **Planning Time**: 0.154 ms | **Execution Time**: 0.059 ms | **Buffers**: Shared hit=15.
-- **Verification**: Guarantees deterministic ascending row lock acquisition across transactions, preventing deadlocks.
 
-### 2. Batched Active Lease Check (`claimBatch`)
-```sql
-SELECT id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at,
-       (expires_at <= NOW()) AS is_expired
-FROM worker_leases
-WHERE job_id = ANY($1::text[]) AND status = 'ACTIVE'
-ORDER BY id ASC FOR UPDATE;
-```
-- **Plan**: `LockRows -> Sort (Sort Key: id ASC) -> Index Scan using idx_worker_leases_status`.
-- **Planning Time**: 0.086 ms | **Execution Time**: 0.034 ms.
-
-### 3. Batched Multi-Row Insert (`claimBatch`)
-```sql
-INSERT INTO worker_leases (
-  id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at
-)
-SELECT
-  v.id, v.job_id, v.worker_id, 'ACTIVE', v.duration_ms,
-  NOW(), NOW(), NOW() + (v.duration_ms * INTERVAL '1 millisecond'), NOW()
-FROM (
-  SELECT unnest($1::text[]) AS id, unnest($2::text[]) AS job_id, unnest($3::text[]) AS worker_id, unnest($4::int[]) AS duration_ms
-) AS v
-RETURNING id, job_id, worker_id, status, duration_ms, acquired_at, renewed_at, expires_at, created_at;
-```
-- **Plan**: `Insert on worker_leases -> Subquery Scan on v -> ProjectSet -> Result`.
-- **Cost**: `0.00..0.05`.
-- **Verification**: Replaces $N$ individual network round trips and SQL statements with a single bulk query returning all created leases in one round trip.
+- **Scheduler**: Only performs eligibility evaluation and atomic lease acquisition. Never invokes Docker APIs.
+- **Executor**: Only handles container lifecycle, environment isolation, process supervision, output capture, and workspace teardown. Never performs job scheduling or lease claims.
+- **Worker**: Holds authoritative lease ownership in PostgreSQL, spawns and tracks domain `JobAttempt` entities, supervises execution, handles continuous lease renewal, persists results transactionally, and releases the lease.
 
 ---
 
-## Architectural Invariants Added (Section 12)
+## 3. Implementation Summary
 
-1. **Deadlock Prevention via Canonical Lock Ordering**: All batched database operations acquiring locks on jobs or leases sort unique IDs ascending (`ORDER BY id ASC FOR UPDATE`).
-2. **Single Active Lease Exclusivity Preserved**: Multi-job batch claiming strictly adheres to `uq_worker_leases_active_job` (`UNIQUE(job_id) WHERE status = 'ACTIVE'`).
-3. **Safe Partial Success Isolation**: Batch lease claims return explicit per-job outcomes (`ACQUIRED`, `CONFLICT`, `NOT_CLAIMABLE`) without failing valid jobs when one job conflicts or is missing.
-4. **Bulk Expiration Precedence**: Expired active leases are transitioned to `EXPIRED` in bulk before new active leases are inserted.
-5. **Bounded Batch Sizing**: Bounded by `DEFAULT_LEASE_BATCH_SIZE = 50` or configured `leaseBatchSize`.
-6. **Strict Semantic Equivalence**: Output structures and reasons from batched claims are 100% equivalent to sequential claims.
+1. **Workspace Boundary & Path Traversal Immunity** ([`packages/executor/src/docker/workspace.ts`](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/executor/src/docker/workspace.ts)):
+   - Added validation in `createWorkspace` to reject path traversal tokens (`..`, `/`, `\`) and verify containment within the designated base directory.
+   - Enforced boundary containment in `cleanupWorkspace` to prevent deletion outside the workspace base directory.
+   - Exported `getDefaultWorkspaceBaseDir`.
+2. **Container Security & Resource Governance** ([`packages/executor/src/docker/docker-executor.ts`](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/executor/src/docker/docker-executor.ts)):
+   - Enforced pre-validation of execution parameters (`command`, `timeoutMs`, `environment` variable names) prior to workspace creation, eliminating resource leakage on invalid inputs.
+   - Added container tracking labels: `forge.managed=true`, `forge.execution_id`, `forge.job_id`, `forge.attempt_id`.
+   - Hardened non-root execution (`--user 1000:1000`) and verified absence of `--privileged`.
+   - Added structured lifecycle logging events: `execution requested`, `container starting`, `container started`, `execution completed`, `execution failed`, `execution timed out`, `execution cancelled`, `cleanup completed`, `cleanup failed`.
+   - Enforced container cleanup safety: restricts container removal to Forge-managed names (`forge-exec-*`).
+   - Guaranteed cleanup in `finally` with isolated error logging.
+3. **Comprehensive Test Suites**:
+   - **Unit Tests** ([`packages/executor/src/docker/docker-executor.test.ts`](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/executor/src/docker/docker-executor.test.ts)): 20 tests covering request validation, timeout clamping, path traversal rejection, cleanup error isolation.
+   - **Security Regressions** ([`packages/executor/src/docker/docker-executor.security.test.ts`](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/executor/src/docker/docker-executor.security.test.ts)): 6 tests verifying non-root enforcement, privilege denial, path traversal rejection, host environment isolation, malicious env var rejection.
+   - **Real Concurrency** ([`packages/executor/src/docker/docker-executor.concurrency.test.ts`](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/packages/executor/src/docker/docker-executor.concurrency.test.ts)): 3 tests verifying parallel 2, 5, and 10 container batches with independent workspaces, independent stdout streams, and zero container leaks.
+   - **Worker Terminal Races** ([`apps/worker/src/worker-races.integration.test.ts`](file:///c:/Users/Rakshaad/OneDrive/Desktop/Forge/apps/worker/src/worker-races.integration.test.ts)): 5 tests verifying completion vs cancellation, timeout vs completion, cancellation taking precedence over timeout, result persistence before lease release, and graceful worker drain during in-flight executions.
 
 ---
 
-## Verification & Quality Gates
+## 4. Execution Lifecycle
 
-- **Unit & Integration Tests**: All **481 tests** across **42 test files** in the monorepo pass.
-  - `packages/database`: 25/25 tests passing, including empty batch, single-item, 50-job bulk claim, partial success, same-worker idempotency, bulk expired replacement, intra-batch duplicate job IDs, reverse-order deadlock prevention, and 10-worker multi-concurrency race.
-  - `apps/scheduler`: 37/37 tests passing, including batched claiming, bounded chunking, and strict semantic equivalence under partial conflicts.
-- **Teardown Verification**: Confirmed **0 dirty jobs, 0 dirty leases, and 0 dirty Redis keys** remain after benchmark execution.
-- **Build & Compilation**: All workspaces compile cleanly (`npm run build`).
-- **Typecheck**: `npm run typecheck` (`tsc -b`) passes with 0 errors.
-- **Lint**: `npm run lint` (`eslint .`) passes with 0 warnings/errors.
-- **Code Style**: `npm run format:check` (`prettier --check .`) passes.
+```text
+1. Lease Claimed & Validated
+   └── Worker confirms active lease in PostgreSQL (status = 'ACTIVE', worker_id match).
+2. Attempt Initialization
+   └── JobAttempt spawned, Job & Attempt transition to RUNNING, persisted to DB.
+3. Supervisor & Renewal Loop Started
+   └── Background lease renewal ticks every WORKER_JOB_LEASE_RENEWAL_INTERVAL_MS.
+   └── If renewal detects LEASE_EXPIRED or LEASE_OWNER_MISMATCH, aborts container immediately.
+4. Ephemeral Workspace Provisioning
+   └── Unique directory created on host, bind-mounted to /workspace:rw.
+5. Container Provisioning & Start
+   └── Unprivileged user 1000:1000, bridge network, labels, resource flags (--cpus, --memory).
+6. Supervised Execution & Output Capture
+   └── Bounded OutputCollector captures stdout/stderr up to MAX_OUTPUT_BYTES (1MB default).
+   └── Hard wall-clock timer enforces timeout via graceful SIGTERM followed by forced SIGKILL.
+   └── AbortSignal cancels running container immediately on demand or worker drain.
+7. Result Classification
+   └── Deterministic precedence: CANCELLED > TIMED_OUT > exitCode (0 -> SUCCEEDED, >0 -> FAILED).
+8. Guaranteed Teardown (finally)
+   └── Forcible container removal (docker rm -f).
+   └── Ephemeral workspace recursive deletion.
+9. Domain State Machine & Retry Evaluation
+   └── evaluateRetry pure policy evaluation; transitions Job & Attempt.
+10. Transactional Persistence & Lease Release
+    └── Saves Job and Attempt state in PostgreSQL transaction, then releases lease.
+```
+
+---
+
+## 5. State Machine Integration
+
+Execution outcomes map directly into the existing domain state machines:
+
+- `SUCCEEDED` (exitCode 0) $\rightarrow$ `attempt.succeed(0)`, `job.succeed()`.
+- `FAILED` (non-zero exitCode) $\rightarrow$ `attempt.fail(code, reason)`. `evaluateRetry` decides:
+  - If `action === 'RETRY'`: `job.transitionTo('QUEUED')`, `job.setNextAttemptAt(date)`.
+  - If exhausted / no policy: `job.fail()`, terminal state.
+- `TIMED_OUT` $\rightarrow$ `attempt.timeout()`. Evaluated by retry policy:
+  - If retryable on timeout: re-enters `QUEUED` with backoff.
+  - If exhausted / no policy: `job.timeout()`, terminal state.
+- `CANCELLED` $\rightarrow$ `attempt.cancel()`, `job.cancel()`. Never retried (non-retryable override).
+- Lease ownership lost $\rightarrow$ `attempt.fail(1, 'Lease ownership lost')`, `job.fail()`.
+
+---
+
+## 6. Security Baseline
+
+| Threat Vector                 | Hardening Enforced                                        | Verified By                          |
+| :---------------------------- | :-------------------------------------------------------- | :----------------------------------- |
+| Container Breakout via Root   | Enforced `--user 1000:1000`                               | Security test (`id -u` == 1000)      |
+| Host Privilege Escalation     | `--privileged` never passed; unprivileged seccomp         | Security test (cannot mount/chroot)  |
+| Path Traversal                | Execution IDs reject `..`, `/`, `\`; strictly within base | Unit & Security tests                |
+| Arbitrary Deletions           | `cleanupWorkspace` verifies containment in base           | Unit & Security tests                |
+| Host Environment Leaking      | Host `process.env` omitted; only explicit env passed      | Security test (`FORGE_SUPER_SECRET`) |
+| Malicious Env Names           | Regex validation `^[A-Za-z_][A-Za-z0-9_]*$`               | Unit & Security tests                |
+| Arbitrary Host Mounts         | Only ephemeral workspace mounted to `/workspace:rw`       | DockerExecutor implementation        |
+| Unintended Container Deletion | Cleanup strictly targets `forge-exec-*` names             | Unit & Integration tests             |
+
+---
+
+## 7. Failure Handling Matrix
+
+| Scenario                 | Execution Result                 | Persistent State                                               | Residual Resources         |
+| :----------------------- | :------------------------------- | :------------------------------------------------------------- | :------------------------- |
+| Process exit 0           | `SUCCEEDED` (exitCode: 0)        | Job/Attempt `SUCCEEDED`, lease released                        | 0 containers, 0 workspaces |
+| Process exit non-zero    | `FAILED` (exitCode: N)           | Job/Attempt `FAILED` (or `QUEUED` if retry), lease released    | 0 containers, 0 workspaces |
+| Wall-clock timeout       | `TIMED_OUT` (exitCode: null)     | Job/Attempt `TIMED_OUT` (or `QUEUED` if retry), lease released | 0 containers, 0 workspaces |
+| AbortSignal cancellation | `CANCELLED` (exitCode: null)     | Job/Attempt `CANCELLED`, lease released                        | 0 containers, 0 workspaces |
+| Invalid env variable     | Throws validation error          | Never creates workspace, no container spawned                  | 0 containers, 0 workspaces |
+| Lease ownership lost     | Container aborted via SIGKILL    | Attempt `FAILED` ('Lease ownership lost'), skips release       | 0 containers, 0 workspaces |
+| Docker CLI missing       | `DockerUnavailableError`         | Attempt `FAILED`, lease released                               | 0 containers, 0 workspaces |
+| Worker graceful drain    | In-flight finishes; new rejected | In-flight succeeds/persists; new jobs rejected                 | 0 containers, 0 workspaces |
+
+---
+
+## 8. Test Verification Results
+
+All 45 test files and 501 tests passed across the entire repository:
+
+- **`packages/executor`**:
+  - `docker-executor.test.ts`: 20 unit tests passed.
+  - `docker-executor.integration.test.ts`: 9 live container tests passed.
+  - `docker-executor.security.test.ts`: 6 security regression tests passed.
+  - `docker-executor.concurrency.test.ts`: 3 live concurrent batch tests (2, 5, 10 jobs) passed.
+- **`apps/worker`**:
+  - `worker-races.integration.test.ts`: 5 terminal race condition tests passed.
+  - `worker-execution.integration.test.ts`: 4 live execution tests passed.
+  - `worker-loss-recovery.integration.test.ts`: 3 recovery tests passed.
+  - `worker-retry.integration.test.ts`: 9 retry tests passed.
+  - `index.test.ts`: 12 unit tests passed.
+- **Zero Leaks Verified**:
+  - Residual Docker containers: `0` (`docker ps -a --filter "name=forge-exec-"`)
+  - Residual ephemeral workspaces: `0` (`os.tmpdir()/forge-workspaces`)
+  - Residual dirty DB records: `0` (`DIRTY_DB_JOBS=0`, `DIRTY_DB_LEASES=0`)
+
+---
+
+## 9. Quality Gates
+
+- `npm run format:check`: **PASSED** (all files match Prettier style)
+- `npm run lint`: **PASSED** (0 ESLint errors, 0 warnings)
+- `npm run typecheck`: **PASSED** (strict `tsc -b` clean)
+- `npm test`: **PASSED** (45 test files, 501 tests)
+- `npm run build`: **PASSED** (all packages and Next.js web application built)
+
+---
+
+## 10. Changed Files
+
+- `packages/executor/src/docker/workspace.ts`
+- `packages/executor/src/docker/docker-executor.ts`
+- `packages/executor/src/docker/docker-executor.test.ts`
+- `packages/executor/src/docker/docker-executor.security.test.ts`
+- `packages/executor/src/docker/docker-executor.concurrency.test.ts`
+- `packages/executor/src/index.ts`
+- `apps/worker/src/worker-races.integration.test.ts`
+- `docs/architecture/invariants.md`
+- `docs/architecture/overview.md`
+- `pr_description.md`
+
+---
+
+## 11. Dependencies
+
+- **Zero new dependencies added.** All execution and containment logic utilizes standard Node.js built-in modules (`node:child_process`, `node:fs/promises`, `node:path`, `node:crypto`, `node:os`) and existing workspace packages.
+
+---
+
+## 12. Known Limitations
+
+- **KubernetesExecutor**: Deferred to future execution milestones; the `Executor` contract abstracts execution runtime to enable seamless addition.
+- **GPU Resource Enforcement**: GPU scheduling metadata is recognized by the scheduler, but GPU container runtime enforcement is marked unverified/deferred without NVIDIA Container Toolkit.
+- **Live WebSocket Log Streaming**: Bounded stdout/stderr capture is supported; live WebSocket streaming transport will be introduced in subsequent PRs.
+
+---
+
+## 13. Merge Recommendation
+
+**`READY TO MERGE`**
