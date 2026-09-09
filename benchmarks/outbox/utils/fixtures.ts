@@ -117,10 +117,13 @@ export async function seedPipelineRunAndJob(
   }
 
   const jobId = createJobId(`bench-oh-job-${randomHex(rng, 16)}`);
+  // A PRNG-unique step name per call: the shared bench run row is seeded once, so successive
+  // `tx.jobs.save` inserts would otherwise all collide on `uq_jobs_run_step`
+  // UNIQUE (pipeline_run_id, step_name) and roll the transaction back before the outbox row.
   const job = new Job({
     id: jobId,
     pipelineRunId: BENCH_RUN_ID,
-    stepName: 'run',
+    stepName: `run-${randomHex(rng, 12)}`,
     command: 'echo bench',
     priority: rng.nextInt(0, 100),
     initialStatus: 'QUEUED',

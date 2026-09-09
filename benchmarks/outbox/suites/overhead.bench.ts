@@ -20,6 +20,21 @@ async function clearRows(pool: DatabasePool): Promise<void> {
   await pool.query('DELETE FROM jobs;');
 }
 
+/**
+ * A phase whose transactions do not all commit produces a meaningless mean — and a plausible
+ * `overheadDeltaMs`. Fail the whole benchmark run instead of emitting one.
+ */
+function assertAllCommitted(result: BenchmarkRunResult, expected: number): void {
+  if (result.failures.success !== expected || result.failures.failures !== 0) {
+    const firstError = result.failures.errors[0] ?? '(no error message captured)';
+    throw new Error(
+      `overhead phase "${result.name}" had failing transactions: ` +
+        `${result.failures.success}/${expected} committed, ${result.failures.failures} failed. ` +
+        `First error: ${firstError}`,
+    );
+  }
+}
+
 export async function runOverheadSuite(
   pool: DatabasePool,
   rng: SeededPRNG,
@@ -45,6 +60,7 @@ export async function runOverheadSuite(
       });
     },
   });
+  assertAllCommitted(baseline, measuredIterations);
 
   await clearRows(pool);
   const withOutbox = await runBenchmark({
@@ -63,6 +79,7 @@ export async function runOverheadSuite(
       });
     },
   });
+  assertAllCommitted(withOutbox, measuredIterations);
 
   await clearRows(pool);
 

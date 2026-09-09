@@ -1,17 +1,17 @@
 {
   "environment": {
-    "gitCommit": "66fdd00ebe3a2e9549b60627a922ae06546c898d",
+    "gitCommit": "f47716d9a4a94f8ffe9466f714afba9a467228b0",
     "gitBranch": "feat/pr-21-outbox",
     "platform": "win32",
     "arch": "x64",
     "cpuModel": "Intel(R) Core(TM) i7-14650HX",
     "cpuCores": 24,
     "totalMemoryBytes": 16869285888,
-    "freeMemoryBytes": 721170432,
+    "freeMemoryBytes": 1365782528,
     "nodeVersion": "v25.2.1",
     "postgresVersion": "PostgreSQL 18.6 (Ubuntu 18.6-0ubuntu0.26.04.1)",
     "redisVersion": "not-applicable",
-    "timestamp": "2026-09-09T09:56:16.677Z"
+    "timestamp": "2026-09-09T10:11:48.649Z"
   },
   "configuration": {
     "seed": 909090,
@@ -32,100 +32,88 @@
         "name": "overhead:baseline (jobs.save + jobAttempts.save)",
         "warmupIterations": 100,
         "measuredIterations": 2000,
-        "totalDurationMs": 3105.4,
+        "totalDurationMs": 12873.2,
         "stats": {
           "count": 2000,
-          "min": 1.0978,
-          "max": 3.3368,
-          "mean": 1.5253,
-          "median": 1.4678,
-          "p95": 1.9808,
-          "p99": 2.3629,
-          "stdDev": 0.226,
-          "opsPerSec": 644.04
+          "min": 3.5902,
+          "max": 71.8259,
+          "mean": 6.396,
+          "median": 6.2886,
+          "p95": 8.5061,
+          "p99": 9.8348,
+          "stdDev": 1.9768,
+          "opsPerSec": 155.36
         },
         "resources": {
-          "heapUsedDeltaBytes": 21022808,
-          "rssDeltaBytes": 32722944,
-          "cpuUserMicros": 1078000,
-          "cpuSystemMicros": 422000
+          "heapUsedDeltaBytes": 11307976,
+          "rssDeltaBytes": 24453120,
+          "cpuUserMicros": 1578000,
+          "cpuSystemMicros": 781000
         },
         "failures": {
           "total": 2000,
-          "success": 0,
-          "failures": 2000,
+          "success": 2000,
+          "failures": 0,
           "conflicts": 0,
           "timeouts": 0,
-          "errors": [
-            "Unique constraint violation for job \"bench-oh-job-8218947039dbf2ab\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists.",
-            "Unique constraint violation for job \"bench-oh-job-0a451343ed0e4897\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists.",
-            "Unique constraint violation for job \"bench-oh-job-51cd45527d382146\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists.",
-            "Unique constraint violation for job \"bench-oh-job-e535284f8f78378a\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists.",
-            "Unique constraint violation for job \"bench-oh-job-883f7639f3172e88\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists."
-          ]
+          "errors": []
         }
       },
       {
         "name": "overhead:with-outbox (+ outbox.enqueue)",
         "warmupIterations": 100,
         "measuredIterations": 2000,
-        "totalDurationMs": 2993.49,
+        "totalDurationMs": 13903.6,
         "stats": {
           "count": 2000,
-          "min": 1.0773,
-          "max": 4.9078,
-          "mean": 1.4719,
-          "median": 1.4144,
-          "p95": 1.8205,
-          "p99": 2.4031,
-          "stdDev": 0.2278,
-          "opsPerSec": 668.12
+          "min": 4.0274,
+          "max": 36.0325,
+          "mean": 6.9164,
+          "median": 6.8235,
+          "p95": 9.2005,
+          "p99": 11.165,
+          "stdDev": 1.7092,
+          "opsPerSec": 143.85
         },
         "resources": {
-          "heapUsedDeltaBytes": -20294592,
-          "rssDeltaBytes": 19988480,
-          "cpuUserMicros": 734000,
-          "cpuSystemMicros": 406000
+          "heapUsedDeltaBytes": -4550144,
+          "rssDeltaBytes": -23195648,
+          "cpuUserMicros": 1437000,
+          "cpuSystemMicros": 922000
         },
         "failures": {
           "total": 2000,
-          "success": 0,
-          "failures": 2000,
+          "success": 2000,
+          "failures": 0,
           "conflicts": 0,
           "timeouts": 0,
-          "errors": [
-            "Unique constraint violation for job \"bench-oh-job-bbaa7cf2028b4773\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists.",
-            "Unique constraint violation for job \"bench-oh-job-201d1d333647df47\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists.",
-            "Unique constraint violation for job \"bench-oh-job-1288903174f1d890\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists.",
-            "Unique constraint violation for job \"bench-oh-job-8efb37bdfb6ff0f8\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists.",
-            "Unique constraint violation for job \"bench-oh-job-b612abc613615002\": Key (pipeline_run_id, step_name)=(bench-outbox-run, run) already exists."
-          ]
+          "errors": []
         }
       }
     ],
-    "overheadDeltaMs": -0.0534,
+    "overheadDeltaMs": 0.5204,
     "throughput": [
       {
         "name": "throughput:events=1",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 144.44,
+        "totalDurationMs": 229.18,
         "stats": {
           "count": 20,
-          "min": 6.6032,
-          "max": 9.0922,
-          "mean": 7.2222,
-          "median": 7.0592,
-          "p95": 8.6887,
-          "p99": 9.0115,
-          "stdDev": 0.6116,
-          "opsPerSec": 138.46
+          "min": 9.3283,
+          "max": 23.0061,
+          "mean": 11.4591,
+          "median": 10.7855,
+          "p95": 13.2107,
+          "p99": 21.047,
+          "stdDev": 2.8296,
+          "opsPerSec": 87.27
         },
         "resources": {
-          "heapUsedDeltaBytes": 2309000,
-          "rssDeltaBytes": 466944,
-          "cpuUserMicros": 31000,
-          "cpuSystemMicros": 15000
+          "heapUsedDeltaBytes": -1087712,
+          "rssDeltaBytes": -909312,
+          "cpuUserMicros": 0,
+          "cpuSystemMicros": 16000
         },
         "failures": {
           "total": 20,
@@ -137,30 +125,30 @@
         },
         "eventCount": 20,
         "batchCount": 40,
-        "eventsPerSec": 138.46,
-        "meanPublishLatencyMs": 0.00739
+        "eventsPerSec": 87.27,
+        "meanPublishLatencyMs": 0.013215
       },
       {
         "name": "throughput:events=10",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 920.95,
+        "totalDurationMs": 985.31,
         "stats": {
           "count": 20,
-          "min": 32.1488,
-          "max": 54.3501,
-          "mean": 46.0477,
-          "median": 47.4234,
-          "p95": 54.2656,
-          "p99": 54.3332,
-          "stdDev": 5.5892,
-          "opsPerSec": 21.72
+          "min": 43.3027,
+          "max": 56.07,
+          "mean": 49.2654,
+          "median": 49.1487,
+          "p95": 53.8058,
+          "p99": 55.6172,
+          "stdDev": 3.2723,
+          "opsPerSec": 20.3
         },
         "resources": {
-          "heapUsedDeltaBytes": 9939192,
-          "rssDeltaBytes": -2359296,
-          "cpuUserMicros": 188000,
-          "cpuSystemMicros": 31000
+          "heapUsedDeltaBytes": 160976,
+          "rssDeltaBytes": 421888,
+          "cpuUserMicros": 156000,
+          "cpuSystemMicros": 125000
         },
         "failures": {
           "total": 20,
@@ -172,30 +160,30 @@
         },
         "eventCount": 200,
         "batchCount": 40,
-        "eventsPerSec": 217.17,
-        "meanPublishLatencyMs": 0.008975
+        "eventsPerSec": 202.98,
+        "meanPublishLatencyMs": 0.008723
       },
       {
         "name": "throughput:events=50",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 3901.51,
+        "totalDurationMs": 4127.45,
         "stats": {
           "count": 20,
-          "min": 151.711,
-          "max": 246.2512,
-          "mean": 195.0757,
-          "median": 199.1837,
-          "p95": 220.8879,
-          "p99": 241.1785,
-          "stdDev": 21.7702,
-          "opsPerSec": 5.13
+          "min": 157.4115,
+          "max": 241.9243,
+          "mean": 206.3724,
+          "median": 208.7939,
+          "p95": 224.1881,
+          "p99": 238.3771,
+          "stdDev": 17.7754,
+          "opsPerSec": 4.85
         },
         "resources": {
-          "heapUsedDeltaBytes": -5053376,
-          "rssDeltaBytes": -58986496,
+          "heapUsedDeltaBytes": -1405696,
+          "rssDeltaBytes": 417792,
           "cpuUserMicros": 469000,
-          "cpuSystemMicros": 188000
+          "cpuSystemMicros": 172000
         },
         "failures": {
           "total": 20,
@@ -207,30 +195,30 @@
         },
         "eventCount": 1000,
         "batchCount": 40,
-        "eventsPerSec": 256.31,
-        "meanPublishLatencyMs": 0.007068
+        "eventsPerSec": 242.28,
+        "meanPublishLatencyMs": 0.006896
       },
       {
         "name": "throughput:events=100",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 8202.32,
+        "totalDurationMs": 8114.18,
         "stats": {
           "count": 20,
-          "min": 382.9396,
-          "max": 436.4604,
-          "mean": 410.1161,
-          "median": 409.9388,
-          "p95": 428.4501,
-          "p99": 434.8583,
-          "stdDev": 12.7764,
-          "opsPerSec": 2.44
+          "min": 327.8263,
+          "max": 434.843,
+          "mean": 405.7091,
+          "median": 418.3184,
+          "p95": 424.5971,
+          "p99": 432.7938,
+          "stdDev": 28.02,
+          "opsPerSec": 2.46
         },
         "resources": {
-          "heapUsedDeltaBytes": 3076152,
-          "rssDeltaBytes": 3878912,
-          "cpuUserMicros": 1141000,
-          "cpuSystemMicros": 344000
+          "heapUsedDeltaBytes": -1862808,
+          "rssDeltaBytes": 3190784,
+          "cpuUserMicros": 890000,
+          "cpuSystemMicros": 453000
         },
         "failures": {
           "total": 20,
@@ -242,30 +230,30 @@
         },
         "eventCount": 2000,
         "batchCount": 40,
-        "eventsPerSec": 243.83,
-        "meanPublishLatencyMs": 0.008482
+        "eventsPerSec": 246.48,
+        "meanPublishLatencyMs": 0.007098
       },
       {
         "name": "throughput:events=500",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 40306.49,
+        "totalDurationMs": 38960.23,
         "stats": {
           "count": 20,
-          "min": 1833.1602,
-          "max": 2199.4289,
-          "mean": 2015.3246,
-          "median": 2019.0053,
-          "p95": 2121.2094,
-          "p99": 2183.785,
-          "stdDev": 79.2349,
-          "opsPerSec": 0.5
+          "min": 1846.0896,
+          "max": 2036.7471,
+          "mean": 1948.0117,
+          "median": 1949.9561,
+          "p95": 2017.2533,
+          "p99": 2032.8483,
+          "stdDev": 57.3369,
+          "opsPerSec": 0.51
         },
         "resources": {
-          "heapUsedDeltaBytes": 5532616,
-          "rssDeltaBytes": 22491136,
-          "cpuUserMicros": 3750000,
-          "cpuSystemMicros": 1859000
+          "heapUsedDeltaBytes": 5221328,
+          "rssDeltaBytes": 14434304,
+          "cpuUserMicros": 4156000,
+          "cpuSystemMicros": 1985000
         },
         "failures": {
           "total": 20,
@@ -277,8 +265,8 @@
         },
         "eventCount": 10000,
         "batchCount": 40,
-        "eventsPerSec": 248.1,
-        "meanPublishLatencyMs": 0.007863
+        "eventsPerSec": 256.67,
+        "meanPublishLatencyMs": 0.008249
       }
     ],
     "explain": [
@@ -286,28 +274,28 @@
         "queryName": "PgOutboxRepository.claimBatch (claimable CTE SELECT, seeded 5000 PENDING rows)",
         "sql": "EXPLAIN (ANALYZE, BUFFERS)\nSELECT id AS claim_id\nFROM outbox_events\nWHERE (status = 'PENDING' AND available_at <= NOW())\n   OR (status = 'CLAIMED' AND claimed_at < $1)\nORDER BY occurred_at, id\nLIMIT 100\nFOR UPDATE SKIP LOCKED;",
         "plan": [
-          "Limit  (cost=1817.60..1818.85 rows=100 width=32) (actual time=2.321..2.385 rows=100.00 loops=1)",
-          "  Buffers: shared hit=1614",
-          "  ->  LockRows  (cost=1817.60..1880.10 rows=5000 width=32) (actual time=2.320..2.377 rows=100.00 loops=1)",
-          "        Buffers: shared hit=1614",
-          "        ->  Sort  (cost=1817.60..1830.10 rows=5000 width=32) (actual time=2.314..2.321 rows=100.00 loops=1)",
+          "Limit  (cost=1894.60..1895.85 rows=100 width=32) (actual time=2.292..2.352 rows=100.00 loops=1)",
+          "  Buffers: shared hit=1691",
+          "  ->  LockRows  (cost=1894.60..1957.10 rows=5000 width=32) (actual time=2.291..2.344 rows=100.00 loops=1)",
+          "        Buffers: shared hit=1691",
+          "        ->  Sort  (cost=1894.60..1907.10 rows=5000 width=32) (actual time=2.284..2.291 rows=100.00 loops=1)",
           "              Sort Key: occurred_at, id",
           "              Sort Method: quicksort  Memory: 466kB",
-          "              Buffers: shared hit=1514",
-          "              ->  Seq Scan on outbox_events  (cost=0.00..1626.50 rows=5000 width=32) (actual time=0.262..1.401 rows=5000.00 loops=1)",
+          "              Buffers: shared hit=1591",
+          "              ->  Seq Scan on outbox_events  (cost=0.00..1703.50 rows=5000 width=32) (actual time=0.192..1.351 rows=5000.00 loops=1)",
           "                    Filter: ((((status)::text = 'PENDING'::text) AND (available_at <= now())) OR (((status)::text = 'CLAIMED'::text) AND (claimed_at < '2026-01-01 00:00:00.001+00'::timestamp with time zone)))",
-          "                    Buffers: shared hit=1514",
+          "                    Buffers: shared hit=1591",
           "Planning:",
-          "  Buffers: shared hit=41",
-          "Planning Time: 0.179 ms",
-          "Execution Time: 2.414 ms",
+          "  Buffers: shared hit=56",
+          "Planning Time: 0.199 ms",
+          "Execution Time: 2.381 ms",
           "",
           "-- partial index idx_outbox_events_claimable used: NO"
         ],
-        "planningTimeMs": 0.179,
-        "executionTimeMs": 2.414
+        "planningTimeMs": 0.199,
+        "executionTimeMs": 2.381
       }
     ]
   },
-  "generatedAt": "2026-09-09T09:58:23.595Z"
+  "generatedAt": "2026-09-09T10:14:16.935Z"
 }
