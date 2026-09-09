@@ -309,7 +309,7 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
     // Durable lifecycle events require a transactional pool: the outbox row must be
     // co-committed with the job/attempt state. jobRepository-only persistence commits the
     // state without the outbox, so pairing it with a publisher is disallowed.
-    if (!options?.pool && options?.eventPublisher) {
+    if (options?.jobRepository && !options?.pool && options?.eventPublisher) {
       throw new Error(
         'Worker durable events require a transactional pool; jobRepository-only persistence cannot guarantee the outbox',
       );
