@@ -1,17 +1,17 @@
 {
   "environment": {
-    "gitCommit": "f47716d9a4a94f8ffe9466f714afba9a467228b0",
+    "gitCommit": "b967a9abbc2d28b1d41ba87d24f4e691dbc0806e",
     "gitBranch": "feat/pr-21-outbox",
     "platform": "win32",
     "arch": "x64",
     "cpuModel": "Intel(R) Core(TM) i7-14650HX",
     "cpuCores": 24,
     "totalMemoryBytes": 16869285888,
-    "freeMemoryBytes": 1365782528,
+    "freeMemoryBytes": 1209757696,
     "nodeVersion": "v25.2.1",
     "postgresVersion": "PostgreSQL 18.6 (Ubuntu 18.6-0ubuntu0.26.04.1)",
     "redisVersion": "not-applicable",
-    "timestamp": "2026-09-09T10:11:48.649Z"
+    "timestamp": "2026-09-09T12:04:00.208Z"
   },
   "configuration": {
     "seed": 909090,
@@ -32,23 +32,23 @@
         "name": "overhead:baseline (jobs.save + jobAttempts.save)",
         "warmupIterations": 100,
         "measuredIterations": 2000,
-        "totalDurationMs": 12873.2,
+        "totalDurationMs": 13429.27,
         "stats": {
           "count": 2000,
-          "min": 3.5902,
-          "max": 71.8259,
-          "mean": 6.396,
-          "median": 6.2886,
-          "p95": 8.5061,
-          "p99": 9.8348,
-          "stdDev": 1.9768,
-          "opsPerSec": 155.36
+          "min": 4.0318,
+          "max": 40.5283,
+          "mean": 6.671,
+          "median": 6.6721,
+          "p95": 8.722,
+          "p99": 10.9906,
+          "stdDev": 1.6615,
+          "opsPerSec": 148.93
         },
         "resources": {
-          "heapUsedDeltaBytes": 11307976,
-          "rssDeltaBytes": 24453120,
-          "cpuUserMicros": 1578000,
-          "cpuSystemMicros": 781000
+          "heapUsedDeltaBytes": -515352,
+          "rssDeltaBytes": -3239936,
+          "cpuUserMicros": 1484000,
+          "cpuSystemMicros": 1250000
         },
         "failures": {
           "total": 2000,
@@ -63,23 +63,23 @@
         "name": "overhead:with-outbox (+ outbox.enqueue)",
         "warmupIterations": 100,
         "measuredIterations": 2000,
-        "totalDurationMs": 13903.6,
+        "totalDurationMs": 15212,
         "stats": {
           "count": 2000,
-          "min": 4.0274,
-          "max": 36.0325,
-          "mean": 6.9164,
-          "median": 6.8235,
-          "p95": 9.2005,
-          "p99": 11.165,
-          "stdDev": 1.7092,
-          "opsPerSec": 143.85
+          "min": 4.0622,
+          "max": 40.229,
+          "mean": 7.5646,
+          "median": 7.7496,
+          "p95": 9.707,
+          "p99": 10.9871,
+          "stdDev": 1.8668,
+          "opsPerSec": 131.48
         },
         "resources": {
-          "heapUsedDeltaBytes": -4550144,
-          "rssDeltaBytes": -23195648,
-          "cpuUserMicros": 1437000,
-          "cpuSystemMicros": 922000
+          "heapUsedDeltaBytes": 601728,
+          "rssDeltaBytes": 14974976,
+          "cpuUserMicros": 1921000,
+          "cpuSystemMicros": 1000000
         },
         "failures": {
           "total": 2000,
@@ -91,29 +91,29 @@
         }
       }
     ],
-    "overheadDeltaMs": 0.5204,
+    "overheadDeltaMs": 0.8936,
     "throughput": [
       {
         "name": "throughput:events=1",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 229.18,
+        "totalDurationMs": 168.88,
         "stats": {
           "count": 20,
-          "min": 9.3283,
-          "max": 23.0061,
-          "mean": 11.4591,
-          "median": 10.7855,
-          "p95": 13.2107,
-          "p99": 21.047,
-          "stdDev": 2.8296,
-          "opsPerSec": 87.27
+          "min": 6.3512,
+          "max": 10.8755,
+          "mean": 8.4441,
+          "median": 8.2239,
+          "p95": 10.8063,
+          "p99": 10.8617,
+          "stdDev": 1.4231,
+          "opsPerSec": 118.43
         },
         "resources": {
-          "heapUsedDeltaBytes": -1087712,
-          "rssDeltaBytes": -909312,
-          "cpuUserMicros": 0,
-          "cpuSystemMicros": 16000
+          "heapUsedDeltaBytes": 2212216,
+          "rssDeltaBytes": 32768,
+          "cpuUserMicros": 16000,
+          "cpuSystemMicros": 0
         },
         "failures": {
           "total": 20,
@@ -125,30 +125,30 @@
         },
         "eventCount": 20,
         "batchCount": 40,
-        "eventsPerSec": 87.27,
-        "meanPublishLatencyMs": 0.013215
+        "eventsPerSec": 118.43,
+        "meanPublishLatencyMs": 0.00791
       },
       {
         "name": "throughput:events=10",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 985.31,
+        "totalDurationMs": 930.99,
         "stats": {
           "count": 20,
-          "min": 43.3027,
-          "max": 56.07,
-          "mean": 49.2654,
-          "median": 49.1487,
-          "p95": 53.8058,
-          "p99": 55.6172,
-          "stdDev": 3.2723,
-          "opsPerSec": 20.3
+          "min": 33.3044,
+          "max": 53.5162,
+          "mean": 46.5496,
+          "median": 47.8777,
+          "p95": 53.1248,
+          "p99": 53.4379,
+          "stdDev": 5.0458,
+          "opsPerSec": 21.48
         },
         "resources": {
-          "heapUsedDeltaBytes": 160976,
-          "rssDeltaBytes": 421888,
-          "cpuUserMicros": 156000,
-          "cpuSystemMicros": 125000
+          "heapUsedDeltaBytes": -3072896,
+          "rssDeltaBytes": -368640,
+          "cpuUserMicros": 110000,
+          "cpuSystemMicros": 32000
         },
         "failures": {
           "total": 20,
@@ -160,30 +160,30 @@
         },
         "eventCount": 200,
         "batchCount": 40,
-        "eventsPerSec": 202.98,
-        "meanPublishLatencyMs": 0.008723
+        "eventsPerSec": 214.82,
+        "meanPublishLatencyMs": 0.008299
       },
       {
         "name": "throughput:events=50",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 4127.45,
+        "totalDurationMs": 4072.16,
         "stats": {
           "count": 20,
-          "min": 157.4115,
-          "max": 241.9243,
-          "mean": 206.3724,
-          "median": 208.7939,
-          "p95": 224.1881,
-          "p99": 238.3771,
-          "stdDev": 17.7754,
-          "opsPerSec": 4.85
+          "min": 156.4302,
+          "max": 230.1066,
+          "mean": 203.6079,
+          "median": 205.2607,
+          "p95": 224.8198,
+          "p99": 229.0492,
+          "stdDev": 16.1921,
+          "opsPerSec": 4.91
         },
         "resources": {
-          "heapUsedDeltaBytes": -1405696,
-          "rssDeltaBytes": 417792,
-          "cpuUserMicros": 469000,
-          "cpuSystemMicros": 172000
+          "heapUsedDeltaBytes": 1618736,
+          "rssDeltaBytes": 344064,
+          "cpuUserMicros": 578000,
+          "cpuSystemMicros": 468000
         },
         "failures": {
           "total": 20,
@@ -195,30 +195,30 @@
         },
         "eventCount": 1000,
         "batchCount": 40,
-        "eventsPerSec": 242.28,
-        "meanPublishLatencyMs": 0.006896
+        "eventsPerSec": 245.57,
+        "meanPublishLatencyMs": 0.006935
       },
       {
         "name": "throughput:events=100",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 8114.18,
+        "totalDurationMs": 8308.01,
         "stats": {
           "count": 20,
-          "min": 327.8263,
-          "max": 434.843,
-          "mean": 405.7091,
-          "median": 418.3184,
-          "p95": 424.5971,
-          "p99": 432.7938,
-          "stdDev": 28.02,
-          "opsPerSec": 2.46
+          "min": 331.5938,
+          "max": 470.1729,
+          "mean": 415.4007,
+          "median": 416.2918,
+          "p95": 453.8102,
+          "p99": 466.9004,
+          "stdDev": 28.3566,
+          "opsPerSec": 2.41
         },
         "resources": {
-          "heapUsedDeltaBytes": -1862808,
-          "rssDeltaBytes": 3190784,
-          "cpuUserMicros": 890000,
-          "cpuSystemMicros": 453000
+          "heapUsedDeltaBytes": -1574040,
+          "rssDeltaBytes": -102400,
+          "cpuUserMicros": 984000,
+          "cpuSystemMicros": 328000
         },
         "failures": {
           "total": 20,
@@ -230,30 +230,30 @@
         },
         "eventCount": 2000,
         "batchCount": 40,
-        "eventsPerSec": 246.48,
-        "meanPublishLatencyMs": 0.007098
+        "eventsPerSec": 240.73,
+        "meanPublishLatencyMs": 0.00637
       },
       {
         "name": "throughput:events=500",
         "warmupIterations": 3,
         "measuredIterations": 20,
-        "totalDurationMs": 38960.23,
+        "totalDurationMs": 40082.54,
         "stats": {
           "count": 20,
-          "min": 1846.0896,
-          "max": 2036.7471,
-          "mean": 1948.0117,
-          "median": 1949.9561,
-          "p95": 2017.2533,
-          "p99": 2032.8483,
-          "stdDev": 57.3369,
-          "opsPerSec": 0.51
+          "min": 1891.4826,
+          "max": 2182.5555,
+          "mean": 2004.1269,
+          "median": 1968.6259,
+          "p95": 2129.2541,
+          "p99": 2171.8952,
+          "stdDev": 78.4364,
+          "opsPerSec": 0.5
         },
         "resources": {
-          "heapUsedDeltaBytes": 5221328,
-          "rssDeltaBytes": 14434304,
-          "cpuUserMicros": 4156000,
-          "cpuSystemMicros": 1985000
+          "heapUsedDeltaBytes": -3989584,
+          "rssDeltaBytes": 15724544,
+          "cpuUserMicros": 4375000,
+          "cpuSystemMicros": 1750000
         },
         "failures": {
           "total": 20,
@@ -265,8 +265,8 @@
         },
         "eventCount": 10000,
         "batchCount": 40,
-        "eventsPerSec": 256.67,
-        "meanPublishLatencyMs": 0.008249
+        "eventsPerSec": 249.49,
+        "meanPublishLatencyMs": 0.008359
       }
     ],
     "explain": [
@@ -274,28 +274,28 @@
         "queryName": "PgOutboxRepository.claimBatch (claimable CTE SELECT, seeded 5000 PENDING rows)",
         "sql": "EXPLAIN (ANALYZE, BUFFERS)\nSELECT id AS claim_id\nFROM outbox_events\nWHERE (status = 'PENDING' AND available_at <= NOW())\n   OR (status = 'CLAIMED' AND claimed_at < $1)\nORDER BY occurred_at, id\nLIMIT 100\nFOR UPDATE SKIP LOCKED;",
         "plan": [
-          "Limit  (cost=1894.60..1895.85 rows=100 width=32) (actual time=2.292..2.352 rows=100.00 loops=1)",
-          "  Buffers: shared hit=1691",
-          "  ->  LockRows  (cost=1894.60..1957.10 rows=5000 width=32) (actual time=2.291..2.344 rows=100.00 loops=1)",
-          "        Buffers: shared hit=1691",
-          "        ->  Sort  (cost=1894.60..1907.10 rows=5000 width=32) (actual time=2.284..2.291 rows=100.00 loops=1)",
+          "Limit  (cost=1837.60..1838.85 rows=100 width=32) (actual time=2.187..2.257 rows=100.00 loops=1)",
+          "  Buffers: shared hit=1634",
+          "  ->  LockRows  (cost=1837.60..1900.10 rows=5000 width=32) (actual time=2.186..2.250 rows=100.00 loops=1)",
+          "        Buffers: shared hit=1634",
+          "        ->  Sort  (cost=1837.60..1850.10 rows=5000 width=32) (actual time=2.180..2.189 rows=100.00 loops=1)",
           "              Sort Key: occurred_at, id",
           "              Sort Method: quicksort  Memory: 466kB",
-          "              Buffers: shared hit=1591",
-          "              ->  Seq Scan on outbox_events  (cost=0.00..1703.50 rows=5000 width=32) (actual time=0.192..1.351 rows=5000.00 loops=1)",
+          "              Buffers: shared hit=1534",
+          "              ->  Seq Scan on outbox_events  (cost=0.00..1646.50 rows=5000 width=32) (actual time=0.135..1.280 rows=5000.00 loops=1)",
           "                    Filter: ((((status)::text = 'PENDING'::text) AND (available_at <= now())) OR (((status)::text = 'CLAIMED'::text) AND (claimed_at < '2026-01-01 00:00:00.001+00'::timestamp with time zone)))",
-          "                    Buffers: shared hit=1591",
+          "                    Buffers: shared hit=1534",
           "Planning:",
-          "  Buffers: shared hit=56",
-          "Planning Time: 0.199 ms",
-          "Execution Time: 2.381 ms",
+          "  Buffers: shared hit=41",
+          "Planning Time: 0.180 ms",
+          "Execution Time: 2.285 ms",
           "",
           "-- partial index idx_outbox_events_claimable used: NO"
         ],
-        "planningTimeMs": 0.199,
-        "executionTimeMs": 2.381
+        "planningTimeMs": 0.18,
+        "executionTimeMs": 2.285
       }
     ]
   },
-  "generatedAt": "2026-09-09T10:14:16.935Z"
+  "generatedAt": "2026-09-09T12:06:30.666Z"
 }
