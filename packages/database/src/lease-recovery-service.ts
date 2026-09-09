@@ -3,6 +3,7 @@ import type {
   DeadLetterJob,
   DeadLetterReason,
   LeaseRecoveryOptions,
+  OutboxEnqueueInput,
   RecoveredLeaseRecord,
   RecoverExpiredLeasesResult,
 } from '@forge/contracts';
@@ -16,6 +17,15 @@ export interface RecoveryLogger {
   error(message: string, context?: Record<string, unknown>): void;
   debug?(message: string, context?: Record<string, unknown>): void;
 }
+
+/**
+ * Maps a recovered-lease outcome to an outbox row to be co-committed with the
+ * recovery transaction. Return `null` to emit nothing for that record. `NO_OP`
+ * records are never passed here.
+ */
+export type OutboxRowForRecoveredLease = (
+  record: RecoveredLeaseRecord,
+) => OutboxEnqueueInput | null;
 
 export class LeaseRecoveryService {
   constructor(
@@ -36,6 +46,7 @@ export class LeaseRecoveryService {
    */
   public async recoverExpiredLeases(
     options?: LeaseRecoveryOptions,
+    outboxRowForRecord?: OutboxRowForRecoveredLease,
   ): Promise<RecoverExpiredLeasesResult> {
     const batchSize = Math.max(1, Math.min(100, options?.batchSize ?? 10));
     const now = options?.now ?? new Date();
@@ -72,7 +83,7 @@ export class LeaseRecoveryService {
 
     // 2. Process each candidate lease in an isolated ACID transaction
     for (const candidate of candidateLeases) {
-      const record = await this.recoverSingleLease(candidate.id, now);
+      const record = await this.recoverSingleLease(candidate.id, now, outboxRowForRecord);
       details.push(record);
       if (record.action === 'REQUEUED' || record.action === 'DEAD_LETTERED') {
         recoveredCount++;
@@ -88,8 +99,20 @@ export class LeaseRecoveryService {
   /**
    * Atomically recovers a single expired lease within a managed transaction.
    */
-  public async recoverSingleLease(leaseId: string, now: Date): Promise<RecoveredLeaseRecord> {
+  public async recoverSingleLease(
+    leaseId: string,
+    now: Date,
+    outboxRowForRecord?: OutboxRowForRecoveredLease,
+  ): Promise<RecoveredLeaseRecord> {
     return withTransaction(this.pool, async (tx) => {
+      // Co-commit a mapped outbox row (if any) with the recovery transaction.
+      // A throw here (e.g. oversize payload) propagates out → ROLLBACK.
+      const enqueueOutbox = async (record: RecoveredLeaseRecord): Promise<void> => {
+        if (!outboxRowForRecord || record.action === 'NO_OP') return;
+        const row = outboxRowForRecord(record);
+        if (row) await tx.outbox.enqueue(row);
+      };
+
       // Step A: Lock and verify lease row
       const leaseRes = await tx.client.query<{
         id: string;
@@ -172,13 +195,15 @@ export class LeaseRecoveryService {
           jobId,
           status: job.status,
         });
-        return {
+        const record: RecoveredLeaseRecord = {
           leaseId,
           jobId,
           workerId,
           action: 'SKIPPED_TERMINAL',
           details: `Job is already in terminal state "${job.status}"`,
         };
+        await enqueueOutbox(record);
+        return record;
       }
 
       // Step E: Reconcile current attempt if one was active
@@ -209,13 +234,15 @@ export class LeaseRecoveryService {
           jobId,
         });
 
-        return {
+        const record: RecoveredLeaseRecord = {
           leaseId,
           jobId,
           workerId,
           action: 'REQUEUED',
           details: 'Requeued cleanly without prior attempt',
         };
+        await enqueueOutbox(record);
+        return record;
       }
 
       const retryDecision = evaluateRetry(latestAttempt, job.retryPolicy);
@@ -234,7 +261,7 @@ export class LeaseRecoveryService {
           nextAttemptAt: nextAttemptAt.toISOString(),
         });
 
-        return {
+        const record: RecoveredLeaseRecord = {
           leaseId,
           jobId,
           workerId,
@@ -242,6 +269,8 @@ export class LeaseRecoveryService {
           nextAttemptAt,
           details: retryDecision.reason,
         };
+        await enqueueOutbox(record);
+        return record;
       }
 
       // Step G: Retry exhausted or non-retryable -> Job becomes FAILED and enters DLQ
@@ -299,7 +328,7 @@ export class LeaseRecoveryService {
         attempts: attempts.length,
       });
 
-      return {
+      const record: RecoveredLeaseRecord = {
         leaseId,
         jobId,
         workerId,
@@ -307,6 +336,8 @@ export class LeaseRecoveryService {
         deadLetterReason,
         details: retryDecision.details,
       };
+      await enqueueOutbox(record);
+      return record;
     });
   }
 }

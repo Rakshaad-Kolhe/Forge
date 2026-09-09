@@ -66,7 +66,11 @@ export { PgWorkerLeaseRepository } from './repositories/pg-worker-lease-reposito
 export { PgWorkerRepository } from './repositories/pg-worker-repository.js';
 
 // Recovery Services
-export { LeaseRecoveryService, type RecoveryLogger } from './lease-recovery-service.js';
+export {
+  LeaseRecoveryService,
+  type OutboxRowForRecoveredLease,
+  type RecoveryLogger,
+} from './lease-recovery-service.js';
 
 // Transactions
 export { type TransactionContext, withTransaction } from './transaction.js';

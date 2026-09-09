@@ -1,4 +1,5 @@
-import type { WorkerLease } from '@forge/contracts';
+import { randomUUID } from 'node:crypto';
+import type { OutboxEnqueueInput, RecoveredLeaseRecord, WorkerLease } from '@forge/contracts';
 import {
   createJobId,
   createPipelineId,
@@ -16,6 +17,7 @@ import type { DatabasePool } from '../types.js';
 import { PgDeadLetterRepository } from './pg-dead-letter-repository.js';
 import { PgJobAttemptRepository } from './pg-job-attempt-repository.js';
 import { PgJobRepository } from './pg-job-repository.js';
+import { PgOutboxRepository } from './pg-outbox-repository.js';
 import { PgPipelineRepository } from './pg-pipeline-repository.js';
 import { PgPipelineRunRepository } from './pg-pipeline-run-repository.js';
 import { PgWorkerLeaseRepository } from './pg-worker-lease-repository.js';
@@ -55,6 +57,7 @@ describe('Real PostgreSQL Lease Recovery & DLQ Integration Tests', () => {
   });
 
   beforeEach(async () => {
+    await pool.query('DELETE FROM outbox_events;');
     await pool.query('DELETE FROM dead_letter_jobs;');
     await pool.query('DELETE FROM worker_leases;');
     await pool.query('DELETE FROM job_attempts;');
@@ -365,5 +368,125 @@ describe('Real PostgreSQL Lease Recovery & DLQ Integration Tests', () => {
     // Job MUST remain CANCELLED
     const refreshedJob = await jobRepo.findById(jobId);
     expect(refreshedJob?.status).toBe('CANCELLED');
+  });
+
+  // --- PR 21: outbox mapper co-commits WorkerLost with the recovery transaction ---
+
+  function workerLostRow(rec: {
+    jobId: string;
+    workerId: string;
+    leaseId: string;
+    action: string;
+    deadLetterReason?: string;
+  }): OutboxEnqueueInput {
+    const eventId = randomUUID();
+    return {
+      id: `outbox_${randomUUID()}`,
+      eventId,
+      eventType: 'WorkerLost',
+      version: 1,
+      occurredAt: new Date().toISOString(),
+      correlation: { jobId: rec.jobId, workerId: rec.workerId },
+      payload: {
+        event_id: eventId,
+        event_type: 'WorkerLost',
+        version: 1,
+        job_id: rec.jobId,
+        worker_id: rec.workerId,
+        payload: {
+          worker_id: rec.workerId,
+          job_id: rec.jobId,
+          lease_id: rec.leaseId,
+          recovery_action: rec.action,
+          ...(rec.deadLetterReason ? { dead_letter_reason: rec.deadLetterReason } : {}),
+        },
+      },
+    };
+  }
+
+  const mapper = (record: RecoveredLeaseRecord): OutboxEnqueueInput | null =>
+    record.action === 'NO_OP' ? null : workerLostRow(record);
+
+  async function seedExpiredLeaseForRetryableJob(slug: string): Promise<string> {
+    const jobId = createJobId(slug);
+    const job = new Job({
+      id: jobId,
+      pipelineRunId: testRunId,
+      stepName: 'retry-step',
+      command: 'exit 1',
+      initialStatus: 'QUEUED',
+      retryPolicy: {
+        maxAttempts: 3,
+        backoff: { baseDelayMs: 1500, factor: 2, maxDelayMs: 10000 },
+        retryOn: ['FAILED'],
+      },
+    });
+    await jobRepo.save(job);
+
+    const claimRes = await leaseRepo.claim({
+      jobId,
+      workerId: `worker-${slug}`,
+      durationMs: 5000,
+    });
+    const lease = (claimRes as { lease: WorkerLease }).lease;
+
+    const attempt = job.createAttempt();
+    attempt.start();
+    job.start();
+    await jobRepo.save(job);
+
+    await pool.query(
+      "UPDATE worker_leases SET expires_at = NOW() - INTERVAL '10 seconds' WHERE id = $1;",
+      [lease.id],
+    );
+
+    return jobId;
+  }
+
+  it('co-commits a WorkerLost row when a lease is REQUEUED', async () => {
+    await seedExpiredLeaseForRetryableJob('job-outbox-requeued');
+
+    const result = await recoveryService.recoverExpiredLeases({ now: new Date() }, mapper);
+    expect(result.details.some((d) => d.action === 'REQUEUED')).toBe(true);
+
+    const rows = await new PgOutboxRepository(pool).listByStatus('PENDING', 10);
+    expect(rows.filter((r) => r.eventType === 'WorkerLost')).toHaveLength(1);
+  });
+
+  it('emits no outbox row for a NO_OP reconciliation', async () => {
+    const record = await recoveryService.recoverSingleLease(
+      'lease-does-not-exist',
+      new Date(),
+      mapper,
+    );
+    expect(record.action).toBe('NO_OP');
+
+    const rows = await new PgOutboxRepository(pool).listByStatus('PENDING', 10);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rolls the recovery transaction back when the outbox enqueue fails', async () => {
+    const seededJobId = await seedExpiredLeaseForRetryableJob('job-outbox-rollback');
+
+    const badMapper = (record: RecoveredLeaseRecord): OutboxEnqueueInput | null => ({
+      ...workerLostRow({
+        jobId: record.jobId,
+        workerId: record.workerId,
+        leaseId: record.leaseId,
+        action: record.action,
+      }),
+      payload: { blob: 'x'.repeat(200000) },
+    });
+
+    await expect(
+      recoveryService.recoverExpiredLeases({ now: new Date() }, badMapper),
+    ).rejects.toBeTruthy();
+
+    const job = await jobRepo.findById(createJobId('job-outbox-rollback'));
+    expect(job?.id).toBe(seededJobId);
+    expect(job!.status).not.toBe('QUEUED');
+
+    const rows = await new PgOutboxRepository(pool).listByStatus('PENDING', 10);
+    expect(rows).toHaveLength(0);
   });
 });
