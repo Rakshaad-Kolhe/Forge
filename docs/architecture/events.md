@@ -1,6 +1,7 @@
 # Forge V2 — Typed Event Architecture (PR 20)
 
-Status: **implemented** (PR 20). Supersedes nothing. Extended by future realtime/transport PRs.
+Status: **implemented** (PR 20); **extended by PR 21** (§18 — durable transactional outbox).
+Supersedes nothing. Extended by future realtime/transport PRs.
 
 PR 19 made Forge capable of executing work. PR 20 makes that execution **observable** through
 a stable architectural event boundary — without building the realtime delivery system yet.
@@ -83,13 +84,13 @@ layer inherits that: consumers must tolerate duplicate events (see § Deduplicat
 
 Every event is a `ForgeEventEnvelope<TType, TPayload>` (`packages/events/src/envelope.ts`):
 
-| Field         | Type                     | Notes                                                                    |
-| ------------- | ------------------------ | ---------------------------------------------------------------------- |
-| `event_id`    | `string` (UUID v4)       | Unique per publication. Immutable. Never derived from `event_type`.   |
-| `event_type`  | `ForgeEventType`         | Discriminant.                                                          |
-| `occurred_at` | `string` (ISO-8601 UTC)  | Wall-clock construction time. **Not** a causal-order signal.          |
-| `version`     | `1`                      | Schema version — always the current `EVENT_SCHEMA_VERSION`.           |
-| `payload`     | type-specific            | Only fields useful to consumers, populated from real committed state. |
+| Field         | Type                    | Notes                                                                 |
+| ------------- | ----------------------- | --------------------------------------------------------------------- |
+| `event_id`    | `string` (UUID v4)      | Unique per publication. Immutable. Never derived from `event_type`.   |
+| `event_type`  | `ForgeEventType`        | Discriminant.                                                         |
+| `occurred_at` | `string` (ISO-8601 UTC) | Wall-clock construction time. **Not** a causal-order signal.          |
+| `version`     | `1`                     | Schema version — always the current `EVENT_SCHEMA_VERSION`.           |
+| `payload`     | type-specific           | Only fields useful to consumers, populated from real committed state. |
 
 Optional correlation ids, set where the producing lifecycle can populate them:
 `pipeline_id`, `run_id`, `job_id`, `attempt_id`, `worker_id`. These are plain strings
@@ -142,21 +143,21 @@ No schema registry, no migration framework. Compatibility is a documented contra
 `emitted` = a real producer publishes it in this PR. `deferred` = contract defined, no
 producer yet (the lifecycle does not exist in the codebase).
 
-| Event              | Status     | Authoritative producer                              | Key payload                                                                              | Correlation                              |
-| ------------------ | ---------- | -------------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------- |
-| `PipelineCreated`  | deferred   | (future API/ingress)                               | `pipeline_id`, `name`, `step_count`                                                     | `pipeline_id`                            |
-| `PipelineQueued`   | deferred   | (future API/ingress)                               | `pipeline_id`, `run_id`                                                                 | `pipeline_id`, `run_id`                  |
-| `PipelineCompleted`| deferred   | (future run-aggregation service)                  | `run_id`, `status`, `job_count`                                                        | `run_id`                                |
-| `JobQueued`        | emitted\*  | Worker — on retry re-queue (`transitionTo('QUEUED')`) | `job_id`, `run_id`, `priority`, `attempt_number`, `next_attempt_at?`                | `run_id`, `job_id`                       |
-| `JobClaimed`       | emitted    | **Scheduler** — successful `worker_leases` claim   | `job_id`, `worker_id`, `lease_id`, `lease_expires_at`                                   | `job_id`, `worker_id`                    |
-| `JobStarted`       | emitted    | **Worker** — after `RUNNING` persisted             | `job_id`, `attempt_id`, `worker_id`, `attempt_number`                                   | `run_id`, `job_id`, `attempt_id`, `worker_id` |
-| `JobLogChunk`      | emitted\*\*| **Worker** — derived post-execution               | `job_id`, `attempt_id`, `sequence`, `stream`, `chunk`, `byte_offset`, `truncated`, `final` | `job_id`, `attempt_id`               |
-| `JobSucceeded`     | emitted    | **Worker** — after terminal persist                | `job_id`, `attempt_id`, `worker_id`, `attempt_number`, `duration_ms`, `exit_code`      | `run_id`, `job_id`, `attempt_id`, `worker_id` |
-| `JobFailed`        | emitted    | **Worker** — after terminal persist                | ` … `, `failure_kind`, `reason`, `exit_code`, `retry_scheduled`, `next_attempt_at?`    | `run_id`, `job_id`, `attempt_id`, `worker_id` |
-| `JobCancelled`     | emitted    | **Worker** — after terminal persist                | `job_id`, `attempt_id`, `worker_id`, `attempt_number`                                   | `run_id`, `job_id`, `attempt_id`, `worker_id` |
-| `WorkerRegistered` | emitted    | **Worker** — after `registry.register()` resolves  | `worker_id`, `hostname?`, `capabilities[]`, `cpu_cores`, `memory_bytes`                | `worker_id`                             |
-| `WorkerHeartbeat`  | emitted    | **Worker** — after each successful heartbeat tick  | `worker_id`, `status`                                                                  | `worker_id`                             |
-| `WorkerLost`       | emitted    | **Scheduler** — per lease reconciled by recovery   | `worker_id`, `job_id`, `lease_id`, `recovery_action`, `dead_letter_reason?`            | `job_id`, `worker_id`                    |
+| Event               | Status      | Authoritative producer                                | Key payload                                                                                | Correlation                                   |
+| ------------------- | ----------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| `PipelineCreated`   | deferred    | (future API/ingress)                                  | `pipeline_id`, `name`, `step_count`                                                        | `pipeline_id`                                 |
+| `PipelineQueued`    | deferred    | (future API/ingress)                                  | `pipeline_id`, `run_id`                                                                    | `pipeline_id`, `run_id`                       |
+| `PipelineCompleted` | deferred    | (future run-aggregation service)                      | `run_id`, `status`, `job_count`                                                            | `run_id`                                      |
+| `JobQueued`         | emitted\*   | Worker — on retry re-queue (`transitionTo('QUEUED')`) | `job_id`, `run_id`, `priority`, `attempt_number`, `next_attempt_at?`                       | `run_id`, `job_id`                            |
+| `JobClaimed`        | emitted     | **Scheduler** — successful `worker_leases` claim      | `job_id`, `worker_id`, `lease_id`, `lease_expires_at`                                      | `job_id`, `worker_id`                         |
+| `JobStarted`        | emitted     | **Worker** — after `RUNNING` persisted                | `job_id`, `attempt_id`, `worker_id`, `attempt_number`                                      | `run_id`, `job_id`, `attempt_id`, `worker_id` |
+| `JobLogChunk`       | emitted\*\* | **Worker** — derived post-execution                   | `job_id`, `attempt_id`, `sequence`, `stream`, `chunk`, `byte_offset`, `truncated`, `final` | `job_id`, `attempt_id`                        |
+| `JobSucceeded`      | emitted     | **Worker** — after terminal persist                   | `job_id`, `attempt_id`, `worker_id`, `attempt_number`, `duration_ms`, `exit_code`          | `run_id`, `job_id`, `attempt_id`, `worker_id` |
+| `JobFailed`         | emitted     | **Worker** — after terminal persist                   | `…`, `failure_kind`, `reason`, `exit_code`, `retry_scheduled`, `next_attempt_at?`          | `run_id`, `job_id`, `attempt_id`, `worker_id` |
+| `JobCancelled`      | emitted     | **Worker** — after terminal persist                   | `job_id`, `attempt_id`, `worker_id`, `attempt_number`                                      | `run_id`, `job_id`, `attempt_id`, `worker_id` |
+| `WorkerRegistered`  | emitted     | **Worker** — after `registry.register()` resolves     | `worker_id`, `hostname?`, `capabilities[]`, `cpu_cores`, `memory_bytes`                    | `worker_id`                                   |
+| `WorkerHeartbeat`   | emitted     | **Worker** — after each successful heartbeat tick     | `worker_id`, `status`                                                                      | `worker_id`                                   |
+| `WorkerLost`        | emitted     | **Scheduler** — per lease reconciled by recovery      | `worker_id`, `job_id`, `lease_id`, `recovery_action`, `dead_letter_reason?`                | `job_id`, `worker_id`                         |
 
 \* `JobQueued` has a real producer only for the **retry re-queue** transition. First-time
 enqueue belongs to the API/ingress plane, which does not exist yet.
@@ -171,12 +172,12 @@ Container stdout -> Log Collector -> Forge Event -> transport -> WebSocket -> Br
 
 ### `failure_kind` (on `JobFailed`)
 
-| Value            | Meaning                                                        | `exit_code` |
-| ---------------- | ------------------------------------------------------------- | ----------- |
-| `FAILED`         | non-zero process exit                                         | the code    |
-| `TIMED_OUT`      | wall-clock timeout; container stopped                         | `null`      |
-| `LEASE_LOST`     | lease ownership lost mid-execution; container aborted         | `null`      |
-| `EXECUTOR_ERROR` | executor threw before producing a result                     | `null`      |
+| Value            | Meaning                                               | `exit_code` |
+| ---------------- | ----------------------------------------------------- | ----------- |
+| `FAILED`         | non-zero process exit                                 | the code    |
+| `TIMED_OUT`      | wall-clock timeout; container stopped                 | `null`      |
+| `LEASE_LOST`     | lease ownership lost mid-execution; container aborted | `null`      |
+| `EXECUTOR_ERROR` | executor threw before producing a result              | `null`      |
 
 `retry_scheduled` is `true` when `evaluateRetry` scheduled another attempt (the job returned
 to `QUEUED`), in which case a `JobQueued` event follows and `next_attempt_at` is set.
@@ -372,17 +373,175 @@ No transactional DB-commit + event-publish atomicity (no outbox yet).
 
 ## 17. Files
 
-| Path                                     | Responsibility                                                        |
-| ---------------------------------------- | ------------------------------------------------------------------- |
-| `packages/events/src/envelope.ts`        | envelope type, `ForgeEventType`, `FORGE_EVENT_TYPES`, `EVENT_SCHEMA_VERSION` |
-| `packages/events/src/events.ts`          | concrete event interfaces + `ForgeEvent` union + payload map        |
-| `packages/events/src/event-id.ts`        | `generateEventId`, `EVENT_ID_PATTERN`, `isEventId`                  |
-| `packages/events/src/factory.ts`         | `createForgeEvent`, `isForgeEventShape`                             |
-| `packages/events/src/schema.ts`          | zod schemas, `parseForgeEvent`, `safeParseForgeEvent`              |
-| `packages/events/src/publisher.ts`       | `EventPublisher` / `EventSubscriber` interfaces, `safePublish`     |
-| `packages/events/src/in-process-bus.ts`  | `InProcessEventBus`                                                 |
-| `packages/events/src/log-chunk.ts`       | `deriveLogChunkEvents`, `DEFAULT_LOG_CHUNK_BYTES`                  |
-| `packages/events/src/summarize.ts`       | `summarizeForgeEvent`, `assertNever`                               |
-| `packages/events/src/errors.ts`          | `EventError`, `EventBusClosedError`                                |
-| `apps/scheduler/src/scheduler.ts`        | emits `JobClaimed`, `WorkerLost` (opt-in via `SchedulerOptions.eventPublisher`) |
-| `apps/worker/src/index.ts`               | emits `WorkerRegistered`/`WorkerHeartbeat`/`JobStarted`/`JobLogChunk`/terminal/`JobQueued` (opt-in via `StartWorkerOptions.eventPublisher`) |
+| Path                                    | Responsibility                                                                                                                              |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/events/src/envelope.ts`       | envelope type, `ForgeEventType`, `FORGE_EVENT_TYPES`, `EVENT_SCHEMA_VERSION`                                                                |
+| `packages/events/src/events.ts`         | concrete event interfaces + `ForgeEvent` union + payload map                                                                                |
+| `packages/events/src/event-id.ts`       | `generateEventId`, `EVENT_ID_PATTERN`, `isEventId`                                                                                          |
+| `packages/events/src/factory.ts`        | `createForgeEvent`, `isForgeEventShape`                                                                                                     |
+| `packages/events/src/schema.ts`         | zod schemas, `parseForgeEvent`, `safeParseForgeEvent`                                                                                       |
+| `packages/events/src/publisher.ts`      | `EventPublisher` / `EventSubscriber` interfaces, `safePublish`                                                                              |
+| `packages/events/src/in-process-bus.ts` | `InProcessEventBus`                                                                                                                         |
+| `packages/events/src/log-chunk.ts`      | `deriveLogChunkEvents`, `DEFAULT_LOG_CHUNK_BYTES`                                                                                           |
+| `packages/events/src/summarize.ts`      | `summarizeForgeEvent`, `assertNever`                                                                                                        |
+| `packages/events/src/errors.ts`         | `EventError`, `EventBusClosedError`                                                                                                         |
+| `apps/scheduler/src/scheduler.ts`       | emits `JobClaimed`, `WorkerLost` (opt-in via `SchedulerOptions.eventPublisher`)                                                             |
+| `apps/worker/src/index.ts`              | emits `WorkerRegistered`/`WorkerHeartbeat`/`JobStarted`/`JobLogChunk`/terminal/`JobQueued` (opt-in via `StartWorkerOptions.eventPublisher`) |
+
+---
+
+## 18. Durable publication & the transactional outbox (PR 21)
+
+PR 20 published every event **best-effort, after** the PostgreSQL commit (§10). PR 21 closes
+that window for the lifecycle events tied to a `jobs` / `worker_leases` state transition: those
+events are now recorded **in the same PostgreSQL transaction** as the transition and delivered
+**at least once** by a polling dispatcher. Best-effort `safePublish` remains for the events
+that are not transactionally coupled.
+
+### 18.1 Durable publication — state + outbox in one transaction
+
+`state transition + outbox_events INSERT = the same PostgreSQL transaction.` The outbox row is
+written through the same `pg.PoolClient` that commits the domain change, so the event is
+durable if and only if the transition is durable — no partial outcome exists.
+
+| Producer                   | Transition                                        | Mechanism                                                                                                                                                                                                                                   |
+| -------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/worker` `executeJob` | `RUNNING` commit; terminal commit; retry re-queue | `tx.outbox.enqueue(...)` inside the existing `withTransaction` blocks — `JobStarted` on the `RUNNING` commit; the terminal `JobSucceeded` / `JobFailed` / `JobCancelled` on the terminal commit; `JobQueued` when `evaluateRetry` re-queues |
+| `apps/scheduler` placement | `worker_leases` claim                             | `PgWorkerLeaseRepository.claimBatch` `pendingOutbox` mapper — `ForgeScheduler` supplies a pure `rowForAcquired` function; the `JobClaimed` rows are inserted on the same client that inserts the lease                                      |
+| `apps/scheduler` recovery  | expired-lease reconciliation                      | `LeaseRecoveryService` `outboxRowForRecord` mapper — inside `recoverSingleLease`'s `withTransaction`, `WorkerLost` is enqueued for `REQUEUED` / `DEAD_LETTERED` / `SKIPPED_TERMINAL` records; `NO_OP` enqueues nothing                      |
+
+A throw while enqueueing rolls the whole transaction back — the lease is not granted, the job
+state is not persisted. `@forge/database` never imports `@forge/events`: producers validate
+with `parseForgeEvent`, then project the envelope to the plain `OutboxEnqueueInput` via
+`toOutboxEnqueueInput` (in `@forge/events`). The repository stores the complete validated
+envelope in `payload JSONB` plus extracted correlation columns, and validates on `enqueue`
+(payload is an object, `event_id` is UUID-shaped, `JSON.stringify(payload)` byte length
+≤ `OUTBOX_MAX_PAYLOAD_BYTES`).
+
+The production-worker guard: `executeJob` throws at entry if `jobRepository` + `eventPublisher`
+are configured **without** `pool` — non-transactional job persistence cannot carry the outbox,
+so that combination is a durability hole, not a degraded mode.
+
+### 18.2 Delivery
+
+```
+outbox_events  ->  OutboxDispatcher   (poll every pollIntervalMs; fenced claimBatch, FOR UPDATE SKIP LOCKED)
+               ->  parseForgeEvent(payload)
+               ->  EventPublisher.publish(event)     (bounded by publishTimeoutMs)
+               ->  markPublished(id, token) | markRetry(id, token, ...)   (fenced on claim_token)
+               ->  subscribers
+```
+
+`OutboxDispatcher` (`@forge/outbox`) is hosted by `startScheduler()` when both a database
+`pool` and an `EventPublisher` are configured. Each tick: `claimBatch` (up to `batchSize`
+rows), then per row `parseForgeEvent` → `publish` under `withTimeout` → conditional checkpoint.
+Retention runs every `retentionEveryNTicks` ticks. `start()` / `stop()` are idempotent and a
+reentrancy guard prevents overlapping ticks. The dispatcher **never** mutates job / attempt /
+lease / dead-letter state. Backoff is
+`outboxBackoffMs(n, base, max) = min(max, base * 2 ** n)` — **no jitter** (project determinism
+rule) — applied via `available_at` (DB-time, never `setTimeout`).
+
+The transport behind `EventPublisher` is still only `InProcessEventBus`. There is no
+`LISTEN` / `NOTIFY` wake-up — polling is the sole correctness path.
+
+### 18.3 Delivery classes
+
+| Event                                                                                                               | Delivery class                                                                         |
+| ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `JobClaimed`, `JobStarted`, `JobSucceeded`, `JobFailed`, `JobCancelled`, `JobQueued` (retry re-queue), `WorkerLost` | **Durable, at-least-once** — outbox → dispatcher                                       |
+| `JobLogChunk`, `WorkerHeartbeat`                                                                                    | **Best-effort** — direct `safePublish`; lost on publisher failure / crash / closed bus |
+| `WorkerRegistered`                                                                                                  | **Best-effort** — registry path, not transactionally coupled in PR 21                  |
+| `PipelineCreated`, `PipelineQueued`, `PipelineCompleted`, first-enqueue `JobQueued`                                 | contract-only, no producer                                                             |
+
+The five best-effort `safePublish` calls the worker previously made for `JobStarted` and the
+terminal `JobSucceeded` / `JobFailed` / `JobCancelled` / retry `JobQueued` are **gone** — each
+durable event now has exactly one authoritative producer: the in-transaction enqueue.
+
+### 18.4 Ordering caveat (new behaviour)
+
+`JobLogChunk` publishes immediately (best-effort) while terminal lifecycle events now go
+outbox → dispatcher and are therefore delayed by **≥ one poll interval**. Subscribers may
+observe `JobSucceeded` / `JobFailed` **before** some or all `JobLogChunk` events for the same
+job. PR 20's per-job ordering guarantee (§9, invariants §14.8) now holds **within** a delivery
+class, not across the durable / best-effort boundary.
+
+### 18.5 Fencing
+
+Every claim and reclaim regenerates `claim_token` (per row, `gen_random_uuid()::text`). Every
+mutating outbox statement is fenced:
+`WHERE id = $1 AND status = 'CLAIMED' AND claim_token = $2`. If it matches 0 rows the
+repository returns `'CLAIM_LOST'` and the dispatcher **discards** the row untouched — a stale
+dispatcher (whose claim was reclaimed by a newer owner after `claimTimeoutMs`) cannot mutate
+that row. `claimed_by` is a diagnostic label only, never a fence. There is **no
+`PUBLISHED → PENDING` transition** — the `status = 'CLAIMED'` predicate on every mutation makes
+it structurally impossible.
+
+### 18.6 Retry accounting
+
+Two counters, deliberately separate:
+
+| Column                   | Incremented                                                                                             | Drives `DEAD`?       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------- | -------------------- |
+| `dispatch_count`         | every claim **and** reclaim                                                                             | no — diagnostic only |
+| `delivery_attempt_count` | **only** in `markRetry`, i.e. only after `publisher.publish` was actually invoked and threw / timed out | yes                  |
+
+A crash after claim (never published) → the next dispatcher reclaims, `dispatch_count++`, and
+**no** delivery budget is consumed. A publish that **succeeds** but whose `markPublished`
+checkpoint fails → the event is re-published on reclaim; the successful re-publish consumes
+**no** budget. An event reaches `DEAD` only when
+`delivery_attempt_count + 1 >= OUTBOX_MAX_DELIVERY_ATTEMPTS` at a genuine transport rejection —
+never because a process died or a checkpoint write failed.
+
+### 18.7 `DEAD`
+
+`DEAD` means: _Forge exhausted its configured publication attempts without confirming
+publication success._ It does **not** mean "delivered but unrecorded". The row is retained in
+full — `payload`, `delivery_attempt_count`, `last_error`, and all timestamps, plus the
+ownership columns (`claimed_at` / `claimed_by` / `claim_token`) for diagnosis. There is **no
+auto-cleanup** of `DEAD` rows in PR 21; they accumulate and require manual triage. (An
+unparseable stored payload — a corruption guard that should never fire — also lands in `DEAD`.)
+
+### 18.8 Retention
+
+Only `PUBLISHED` rows older than `OUTBOX_RETENTION_MAX_AGE_MS` (default **7 days**;
+`0` disables retention entirely) are deleted, in bounded batches
+(`OUTBOX_RETENTION_BATCH_SIZE`) under `FOR UPDATE SKIP LOCKED`. Retention **never** deletes
+`PENDING`, `CLAIMED`, or `DEAD` rows. The window is deliberately far longer than 24h so that
+incident forensics and consumer catch-up have room.
+
+### 18.9 Residual failure window
+
+The outbox does **not** achieve atomic DB ↔ external-transport commit. One window remains:
+
+```
+publisher.publish(event) succeeds
+        |
+        v
+markPublished fails  /  dispatcher dies before the checkpoint
+        |
+        v
+next dispatcher reclaims the row and re-publishes  ->  consumers see a duplicate
+```
+
+This is the intended at-least-once behaviour. Consumers dedupe on `event_id` (unique,
+immutable) and keep idempotent handlers.
+
+### 18.10 Guarantees / non-guarantees
+
+> **Forge durably records events transactionally with PostgreSQL state and delivers them at
+> least once; consumers must tolerate duplicates.**
+
+Non-guarantees (unchanged from PR 20, restated for the outbox):
+
+- **No exactly-once delivery.** A re-publish after a crash or a failed checkpoint is expected.
+- **No global or cross-producer ordering.** Ordering holds only per-job, per-producer, within
+  a single delivery class (§18.4).
+- **No atomic DB ↔ external-transport commit.** The DB transaction and `publisher.publish` are
+  separate steps; §18.9 is the residual window.
+
+Measured cost (`npm run benchmark:outbox`; `benchmarks/reports/outbox-benchmark-report.json`):
+the in-transaction `outbox.enqueue` adds ≈ **+0.5 ms** mean per event to the commit; dispatcher
+throughput against a subscriber-less bus is ~90 events/sec for single-event ticks, rising to
+~200–260 events/sec for batches of 10–500. The `claimBatch` selection currently plans as a
+**Seq Scan + quicksort** — the `status = 'PENDING' OR status = 'CLAIMED'` predicate prevents
+the `idx_outbox_events_claimable` partial index from applying (follow-up work).

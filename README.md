@@ -2,7 +2,7 @@
 
 Forge V2 is a self-hosted distributed CI/CD orchestration engine.
 
-This repository is currently at **PR 20: Typed Event Architecture & Execution Lifecycle Events**.
+This repository is currently at **PR 21: Durable Transactional Outbox**.
 
 ---
 
@@ -17,12 +17,13 @@ This repository is currently at **PR 20: Typed Event Architecture & Execution Li
   - `@forge/config`: Strongly typed runtime environment validation using Zod (including lease parameters, executor configurations, retry limits, backoff bounds, drain timeout limits, fairness aging interval, age bonus step, max age bonus ceilings, and schema refinements).
   - `@forge/logging`: Structured logger (human-readable in development, newline-delimited JSON in production).
   - `@forge/pipeline`: Core in-memory domain model (Pipelines, Runs, Jobs, Attempts, DAG resolution, State Machines, Job Execution Requirements, Job Priority validation, timestamps `createdAt` / `queuedAt`, pure deterministic capability/resource matching, pure retry evaluation via `evaluateRetry`, bounded exponential backoff with overflow protection, and attempt immutability).
-  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations `001` through `007`, typed repositories including `PgDeadLetterRepository`, transactions, state machine integrity enforcement, terminal state immutability, worker registry, persisted job requirements, priority index, `worker_leases` with partial unique index for single-active-lease exclusivity, `idx_jobs_retry_schedulable` partial index for high-throughput schedulable job discovery, `LeaseRecoveryService` with row-level locking `FOR UPDATE SKIP LOCKED`, and durable `dead_letter_jobs` table).
+  - `@forge/database`: PostgreSQL persistence layer (Connection pooling, schema migrations `001` through `008`, typed repositories including `PgDeadLetterRepository` and `PgOutboxRepository`, transactions with `tx.outbox` on every `TransactionContext`, state machine integrity enforcement, terminal state immutability, worker registry, persisted job requirements, priority index, `worker_leases` with partial unique index for single-active-lease exclusivity, `idx_jobs_retry_schedulable` partial index for high-throughput schedulable job discovery, `LeaseRecoveryService` with row-level locking `FOR UPDATE SKIP LOCKED`, durable `dead_letter_jobs` table, and the `outbox_events` transactional outbox table with fenced batch claiming).
   - `@forge/redis`: Redis coordination foundation (Connection management, health checks, low-level generic primitives, TTL, atomic operations, and real Redis integration tests).
   - `@forge/queue`: Redis-backed reliable FIFO job queue (At-least-once delivery, explicit acknowledgement, queue depth, in-flight visibility tracking, crash/unacknowledged recovery, and competing consumer coordination).
   - `@forge/worker-registry`: Distributed worker registration and liveness coordination (Durable worker metadata and hardware capacity in PostgreSQL, transient heartbeat state with TTL in Redis, crash/stale detection, graceful deregistration, and isolated lifecycle state machines decoupled from lease ownership).
   - `@forge/executor`: Sandboxed container execution engine implementing `Executor` with production-oriented `DockerExecutor`, ephemeral temporary workspace management, non-root user execution (`--user 1000:1000`), container isolation (no privileged mode, no host Docker socket mount, bridge networking), resource limit enforcement (CPU, memory, unverified GPU status), wall-clock timeout supervision (`docker stop` -> `docker kill`), bounded stdout/stderr capture with truncation protection, and guaranteed teardown in `finally` blocks.
-  - `@forge/events`: Neutral, transport-independent typed event architecture — versioned `ForgeEventEnvelope` with Forge-generated immutable `event_id` (UUID v4) and domain correlation ids, discriminated `ForgeEvent` union with compile-time exhaustiveness, zod validation (`parseForgeEvent`, unknown-field stripping, unknown-version rejection), `EventPublisher` / `EventSubscriber` seam, `InProcessEventBus` (subscriber-failure isolation, explicit idempotent shutdown, no global singleton, no deduplication), and post-execution `JobLogChunk` derivation from the bounded PR 19 capture. Notifications of committed state transitions only — at-least-once, no exactly-once delivery, no global ordering, no outbox; PostgreSQL stays authoritative.
+  - `@forge/events`: Neutral, transport-independent typed event architecture — versioned `ForgeEventEnvelope` with Forge-generated immutable `event_id` (UUID v4) and domain correlation ids, discriminated `ForgeEvent` union with compile-time exhaustiveness, zod validation (`parseForgeEvent`, unknown-field stripping, unknown-version rejection), `EventPublisher` / `EventSubscriber` seam, `InProcessEventBus` (subscriber-failure isolation, explicit idempotent shutdown, no global singleton, no deduplication), and post-execution `JobLogChunk` derivation from the bounded PR 19 capture. Notifications of committed state transitions only — at-least-once, no exactly-once delivery, no global ordering; PostgreSQL stays authoritative. Lifecycle events tied to a `jobs` / `worker_leases` transition are now recorded durably via the PR 21 transactional outbox (see `@forge/outbox`); `JobLogChunk` / `WorkerHeartbeat` / `WorkerRegistered` stay best-effort.
+  - `@forge/outbox`: Durable event transport — `OutboxDispatcher` polls the `outbox_events` table, fenced-claims a bounded batch (`claim_token` regenerated per claim/reclaim), publishes each event through the `EventPublisher` seam under a bounded timeout, and checkpoints `PUBLISHED` / retries with jitter-free exponential backoff / marks `DEAD` only after the configured genuine transport rejections. Conservative `PUBLISHED`-only retention (default 7 days; `DEAD` retained for manual triage). At-least-once, no exactly-once delivery; consumers must tolerate duplicates. Hosted by `apps/scheduler` when a database pool and publisher are configured.
 - **Service Shells & Applications**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
   - `apps/scheduler`: Task scheduler service (`@forge/scheduler`) providing operational eligibility evaluation (`READY + ALIVE`), exclusion of `DRAINING` workers, deterministic worker selection policy (`DeterministicFirstEligible`), baseline priority scheduling policy (`HighestPriorityFirstPolicy`), starvation-prevention queue aging policy (`FairAgingPriorityPolicy` computing dynamic effective priority with bounded age bonus), virtual time injection across ordering and placement, canonical alphanumeric tie-breaking, retry fairness reset invariant (`nextAttemptAt` anchor), non-blocking unschedulable semantics, batch evaluation, unacknowledged queue recoverability, atomic distributed worker lease acquisition via PostgreSQL, due retry job discovery (`scheduleDueJobs`) with non-blocking backoff awareness (`RETRY_BACKOFF_ACTIVE`), integrated lease recovery loop (`recoverExpiredLeases`, `startRecoveryLoop`), and opt-in best-effort typed lifecycle event emission (`JobClaimed` on lease acquisition, `WorkerLost` per reconciled lease) after the authoritative commit.
@@ -64,9 +65,11 @@ forge/
 │   ├── queue/          # Redis-backed FIFO job queue and recovery primitives
 │   ├── worker-registry/# Worker registration, metadata and heartbeat coordination
 │   ├── executor/       # Container executor and ephemeral execution engine
-│   └── events/         # Typed lifecycle event contract, publisher seam, in-process bus
+│   ├── events/         # Typed lifecycle event contract, publisher seam, in-process bus
+│   └── outbox/         # Durable outbox dispatcher (poll, fenced claim, publish, retry, retention)
 ├── benchmarks/
-│   └── scheduler/      # Reproducible scheduler performance benchmarking harness
+│   ├── scheduler/      # Reproducible scheduler performance benchmarking harness
+│   └── outbox/         # Outbox overhead, dispatcher throughput, claim-query EXPLAIN harness
 ├── docs/
 │   └── architecture/
 │       ├── decisions/  # Architecture Decision Records (ADR-001 - ADR-005)
@@ -143,6 +146,7 @@ npm run format:check
 
 ```bash
 npm run benchmark:scheduler
+npm run benchmark:outbox
 ```
 
 ---
