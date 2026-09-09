@@ -8,3 +8,4 @@
  */
 export * from './errors.js';
 export * from './backoff.js';
+export * from './dispatcher.js';
