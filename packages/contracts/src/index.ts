@@ -241,6 +241,16 @@ export interface BatchClaimItem {
 export interface BatchClaimOptions {
   readonly items: readonly BatchClaimItem[];
   readonly defaultDurationMs?: number;
+  /**
+   * PR 21: when set, `claimBatch` inserts one outbox row per FRESH `ACQUIRED` item
+   * (`isIdempotent !== true`) inside the same transaction as the lease INSERT.
+   * `rowForAcquired` is a pure mapper — returns data, runs no SQL, is not given the
+   * transaction client. It must be a function (not a pre-built map) because the mapped
+   * `JobClaimed` payload needs the freshly-minted `lease_id` / `lease_expires_at`.
+   */
+  readonly pendingOutbox?: {
+    readonly rowForAcquired: (item: BatchClaimItem, lease: WorkerLease) => OutboxEnqueueInput;
+  };
 }
 
 /**
