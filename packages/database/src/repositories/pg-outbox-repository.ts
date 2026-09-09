@@ -242,6 +242,7 @@ export class PgOutboxRepository implements OutboxRepository {
            WHERE status = 'PUBLISHED' AND published_at < $1
            ORDER BY published_at
            LIMIT $2
+           FOR UPDATE SKIP LOCKED
          );`,
         [cutoff, limit],
       );

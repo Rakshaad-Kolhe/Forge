@@ -107,18 +107,18 @@ describe('OutboxDispatcher — retention sweep (real PG)', () => {
   });
 
   it('two dispatchers sweeping concurrently do not error and delete each aged row once', async () => {
-    const a = heartbeatInput();
-    const b = heartbeatInput();
-    await repo.enqueue(a);
-    await repo.enqueue(b);
-    // Distinct published_at so both DELETE subqueries lock rows in the same order (no deadlock).
+    // All aged rows share one published_at — the normal case (a batch published in
+    // one transaction). deletePublishedBefore uses FOR UPDATE SKIP LOCKED, so two
+    // concurrent sweeps partition the rows (each skips what the other locked)
+    // instead of locking them in opposite order and deadlocking.
+    const aged = [heartbeatInput(), heartbeatInput(), heartbeatInput(), heartbeatInput()];
+    for (const row of aged) {
+      await repo.enqueue(row);
+    }
     await pool.query(
-      `UPDATE outbox_events SET status='PUBLISHED', published_at = NOW() - INTERVAL '30 days' WHERE id = $1;`,
-      [a.id],
-    );
-    await pool.query(
-      `UPDATE outbox_events SET status='PUBLISHED', published_at = NOW() - INTERVAL '29 days' WHERE id = $1;`,
-      [b.id],
+      `UPDATE outbox_events SET status='PUBLISHED', published_at = NOW() - INTERVAL '10 days'
+       WHERE id = ANY($1::text[]);`,
+      [aged.map((row) => row.id)],
     );
 
     const mk = () =>
@@ -129,9 +129,11 @@ describe('OutboxDispatcher — retention sweep (real PG)', () => {
       });
     const [s1, s2] = await Promise.all([mk().runOnce(), mk().runOnce()]);
 
-    // No exception thrown, and the two aged rows are removed exactly once in total.
-    expect(s1.retentionDeleted + s2.retentionDeleted).toBe(2);
-    expect(await repo.findByEventId(a.eventId)).toBeNull();
-    expect(await repo.findByEventId(b.eventId)).toBeNull();
+    // No exception thrown, and every aged row is removed exactly once in total
+    // between the two sweeps — no double-delete, no deadlock, no miss.
+    expect(s1.retentionDeleted + s2.retentionDeleted).toBe(aged.length);
+    for (const row of aged) {
+      expect(await repo.findByEventId(row.eventId)).toBeNull();
+    }
   });
 });
