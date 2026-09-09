@@ -412,12 +412,12 @@ leaves the `idx_outbox_events_claimable` partial index unused (§9) — `Seq Sca
 `quicksort`, `O(table)`. Fine at current scale (2.3 ms / 5000 rows); the follow-up is a
 `UNION ALL` rewrite (one arm per status, each index-eligible), gated on re-running the
 fencing and ordering tests (T6 / T13) since it changes the claim SQL.
-b. **Recovery-only scheduler loses best-effort `WorkerLost`.** A scheduler configured with
-`{ recoveryService, eventPublisher }` but no `leaseRepository` no longer emits `WorkerLost`,
-because the recovery mapper is gated on `outboxEnabled` (which requires `claimBatch`). No
-durability is lost (this path was only ever best-effort), and every realistic
-recovery-capable scheduler carries a `leaseRepository`. Follow-up: gate the recovery mapper
-on `Boolean(this.eventPublisher)` (a `recoveryOutboxEnabled` getter) instead.
+b. **Recovery-only scheduler `WorkerLost` gating — fixed in final review (`79d48bb`).** The
+recovery mapper was originally gated on `outboxEnabled` (which requires `claimBatch`), so a
+scheduler configured with `{ recoveryService, eventPublisher }` but no `leaseRepository` would
+emit no `WorkerLost` at all. Now gated on a separate `recoveryOutboxEnabled` getter
+(`Boolean(this.eventPublisher)`), with a `scheduler.integration.test.ts` case for the
+no-`leaseRepository` recovery path. `JobClaimed` still uses `outboxEnabled`.
 c. **`CLAUDE.md` was updated in the main working tree only.** It is git-untracked in this repo,
 so the migrations `001`–`008` / `packages/outbox` / `tx.outbox` / `benchmark:outbox` / status
 edits made to it are **not** in this branch's diff.
@@ -436,6 +436,16 @@ running to drain the outbox.
 h. **No `LISTEN` / `NOTIFY` wake-up.** The dispatcher polls at `pollIntervalMs`; there is no
 push notification when a row is enqueued. Polling is the only correctness path (explicitly
 in scope per spec §18); latency is bounded below by one poll interval.
+i. **Worker `pool`-required guard is narrow.** `executeJob` throws only for the
+`jobRepository` + `eventPublisher` + no-`pool` combination. A worker configured with an
+`eventPublisher` and _no_ persistence at all is not caught and silently emits no lifecycle
+events. The final-review fix wave widened the guard to `!pool && eventPublisher`, but that
+forced-rewrote six PR-20 pool-less lifecycle-event unit tests into throw-assertions and
+dropped the sole regression test for `safePublish` swallowing a rejecting best-effort
+publisher (invariant §14.3, a live path via the pool-backed `JobLogChunk` loop); it was
+reverted (`9e122c7`). Follow-up: widen the guard **and** re-home those six tests onto a
+pool-backed worker (assert the durable rows) plus add a `packages/events` `safePublish` unit
+test for the rejecting-publisher-is-swallowed-and-logged contract.
 
 ## 16. Merge Recommendation
 
