@@ -206,3 +206,49 @@ describe('OutboxDispatcher.runOnce', () => {
     expect(s.reclaimed).toBe(1);
   });
 });
+
+describe('OutboxDispatcher lifecycle', () => {
+  it('start is idempotent and stop leaves no timer running', async () => {
+    const repo = new FakeOutboxRepo();
+    repo.seed(evt());
+    repo.seed(evt());
+    const publisher: EventPublisher = { publish: vi.fn().mockResolvedValue(undefined) };
+    const d = new OutboxDispatcher({
+      repository: repo,
+      publisher,
+      config: { ...CONFIG, pollIntervalMs: 20 },
+    });
+    d.start();
+    d.start(); // no throw, no second interval
+    await new Promise((r) => setTimeout(r, 70));
+    await d.stop();
+    await d.stop(); // idempotent
+    const callsAfterStop = (publisher.publish as ReturnType<typeof vi.fn>).mock.calls.length;
+    await new Promise((r) => setTimeout(r, 60));
+    expect((publisher.publish as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterStop);
+  });
+
+  it('does not run overlapping ticks', async () => {
+    const repo = new FakeOutboxRepo();
+    for (let i = 0; i < 5; i++) repo.seed(evt());
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const publisher: EventPublisher = {
+      publish: async () => {
+        concurrent += 1;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await new Promise((r) => setTimeout(r, 15));
+        concurrent -= 1;
+      },
+    };
+    const d = new OutboxDispatcher({
+      repository: repo,
+      publisher,
+      config: { ...CONFIG, pollIntervalMs: 5, batchSize: 5 },
+    });
+    d.start();
+    await new Promise((r) => setTimeout(r, 120));
+    await d.stop();
+    expect(maxConcurrent).toBe(1); // sequential publish within a tick; no overlapping ticks
+  });
+});

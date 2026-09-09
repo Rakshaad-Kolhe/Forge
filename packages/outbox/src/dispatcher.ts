@@ -43,6 +43,10 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new OutboxPublishTimeoutError(ms)), ms);
@@ -208,15 +212,35 @@ export class OutboxDispatcher {
     this.logger?.warn('outbox.claim_lost', this.ctx(row));
   }
 
+  private async tick(): Promise<void> {
+    if (this.dispatching || this.stopped) return;
+    this.dispatching = true;
+    try {
+      await this.runOnce();
+    } catch (err) {
+      this.logger?.error('outbox.tick_failed', { error: errMsg(err) });
+    } finally {
+      this.dispatching = false;
+    }
+  }
+
   public start(): void {
-    // Task 12 — wire these fields into the daemon loop
-    void (this.timer, this.dispatching, this.stopped);
-    throw new Error('not implemented until Task 12');
+    if (this.timer) return;
+    this.stopped = false;
+    this.timer = setInterval(() => {
+      void this.tick();
+    }, this.config.pollIntervalMs);
+    this.timer.unref();
   }
 
   public async stop(): Promise<void> {
-    // Task 12 — wire these fields into the daemon loop
-    void (this.timer, this.dispatching, this.stopped);
-    throw new Error('not implemented until Task 12');
+    this.stopped = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+    while (this.dispatching) {
+      await sleep(10);
+    }
   }
 }
