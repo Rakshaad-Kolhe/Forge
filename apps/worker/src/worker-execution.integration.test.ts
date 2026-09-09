@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { OutboxEventRecord } from '@forge/contracts';
 import {
   createDatabasePool,
   PgJobAttemptRepository,
   PgJobRepository,
+  PgOutboxRepository,
   PgPipelineRepository,
   PgPipelineRunRepository,
   PgWorkerLeaseRepository,
@@ -33,7 +35,11 @@ describe('Worker Execution & Lease Integration (Real PostgreSQL + Real Docker)',
   let executor: DockerExecutor;
   let workerA: WorkerShell;
   let workerB: WorkerShell;
+  let durableWorker: WorkerShell;
   let dockerAvailable = false;
+
+  const eventPayload = (r: OutboxEventRecord): Record<string, unknown> =>
+    (r.payload as { payload: Record<string, unknown> }).payload;
 
   beforeAll(async () => {
     pool = createDatabasePool({ connectionString: databaseUrl, maxConnections: 10 });
@@ -69,11 +75,21 @@ describe('Worker Execution & Lease Integration (Real PostgreSQL + Real Docker)',
       executor,
       defaultLeaseDurationMs: 30000,
     });
+
+    durableWorker = startWorker({
+      workerId: 'worker-node-durable',
+      leaseRepository: leaseRepo,
+      pool,
+      executor,
+      eventPublisher: { publish: async () => {} },
+      defaultLeaseDurationMs: 30000,
+    });
   });
 
   afterAll(async () => {
     await workerA.stop();
     await workerB.stop();
+    await durableWorker.stop();
     await pool.close();
   });
 
@@ -273,5 +289,188 @@ describe('Worker Execution & Lease Integration (Real PostgreSQL + Real Docker)',
 
     // Clean up lease
     await workerA.releaseLease(claimResA.lease.id, job.id);
+  });
+
+  describe('durable lifecycle events (PR 21 — transactional outbox)', () => {
+    it('co-commits JobStarted + JobSucceeded into outbox_events on a successful durable execution', async () => {
+      if (!dockerAvailable) return;
+      await pool.query('DELETE FROM outbox_events;');
+
+      const { run } = await createTestPipelineAndRun('outbox-succ');
+      const jobId = createJobId(`job-outbox-succ-${Date.now()}`);
+      const job = new Job({
+        id: jobId,
+        pipelineRunId: run.id,
+        stepName: 'build',
+        command: 'echo "durable outbox success"',
+        initialStatus: 'QUEUED',
+      });
+      await jobRepo.save(job);
+
+      const claimRes = await durableWorker.claimJob(job.id);
+      expect(claimRes.status).toBe('ACQUIRED');
+      if (claimRes.status !== 'ACQUIRED') return;
+
+      const execRes = await durableWorker.executeJob({ job, leaseId: claimRes.lease.id });
+      expect(execRes.result.status).toBe('SUCCEEDED');
+
+      const rows = await new PgOutboxRepository(pool).listByStatus('PENDING', 20);
+      expect(rows.map((r) => r.eventType).sort()).toEqual(['JobStarted', 'JobSucceeded']);
+      expect(rows.every((r) => r.status === 'PENDING')).toBe(true);
+      for (const r of rows) {
+        expect(r.jobId).toBe(job.id);
+        expect(r.workerId).toBe('worker-node-durable');
+      }
+      expect(eventPayload(rows.find((r) => r.eventType === 'JobStarted')!)).toMatchObject({
+        job_id: job.id,
+        worker_id: 'worker-node-durable',
+        attempt_number: 1,
+      });
+      expect(eventPayload(rows.find((r) => r.eventType === 'JobSucceeded')!)).toMatchObject({
+        job_id: job.id,
+        worker_id: 'worker-node-durable',
+        exit_code: 0,
+        attempt_number: 1,
+      });
+
+      const jobRow = await pool.query('SELECT status FROM jobs WHERE id = $1;', [job.id]);
+      expect(jobRow.rows[0]?.status).toBe('SUCCEEDED');
+    });
+
+    it('co-commits JobStarted + JobFailed + JobQueued when a durable execution schedules a retry', async () => {
+      if (!dockerAvailable) return;
+      await pool.query('DELETE FROM outbox_events;');
+
+      const { run } = await createTestPipelineAndRun('outbox-retry');
+      const jobId = createJobId(`job-outbox-retry-${Date.now()}`);
+      const job = new Job({
+        id: jobId,
+        pipelineRunId: run.id,
+        stepName: 'test',
+        command: 'echo "will retry" && exit 1',
+        initialStatus: 'QUEUED',
+        retryPolicy: {
+          maxAttempts: 2,
+          backoff: { baseDelayMs: 500, factor: 2, maxDelayMs: 2000 },
+          retryOn: ['FAILED'],
+        },
+      });
+      await jobRepo.save(job);
+
+      const claimRes = await durableWorker.claimJob(job.id);
+      expect(claimRes.status).toBe('ACQUIRED');
+      if (claimRes.status !== 'ACQUIRED') return;
+
+      const execRes = await durableWorker.executeJob({ job, leaseId: claimRes.lease.id });
+      expect(execRes.result.status).toBe('FAILED');
+      expect(execRes.retryDecision?.action).toBe('RETRY');
+
+      const rows = await new PgOutboxRepository(pool).listByStatus('PENDING', 20);
+      expect(rows.map((r) => r.eventType).sort()).toEqual(
+        ['JobFailed', 'JobQueued', 'JobStarted'].sort(),
+      );
+      expect(rows.every((r) => r.status === 'PENDING')).toBe(true);
+      expect(eventPayload(rows.find((r) => r.eventType === 'JobFailed')!)).toMatchObject({
+        retry_scheduled: true,
+        failure_kind: 'FAILED',
+      });
+      expect(eventPayload(rows.find((r) => r.eventType === 'JobQueued')!)).toMatchObject({
+        job_id: job.id,
+        attempt_number: 2,
+      });
+
+      const jobRow = await pool.query('SELECT status FROM jobs WHERE id = $1;', [job.id]);
+      expect(jobRow.rows[0]?.status).toBe('QUEUED');
+    });
+
+    it('co-commits JobStarted + JobFailed(FAILED, retry_scheduled false) for a non-retryable durable failure', async () => {
+      if (!dockerAvailable) return;
+      await pool.query('DELETE FROM outbox_events;');
+
+      const { run } = await createTestPipelineAndRun('outbox-fail');
+      const jobId = createJobId(`job-outbox-fail-${Date.now()}`);
+      const job = new Job({
+        id: jobId,
+        pipelineRunId: run.id,
+        stepName: 'test',
+        command: 'echo "hard fail" && exit 7',
+        initialStatus: 'QUEUED',
+      });
+      await jobRepo.save(job);
+
+      const claimRes = await durableWorker.claimJob(job.id);
+      expect(claimRes.status).toBe('ACQUIRED');
+      if (claimRes.status !== 'ACQUIRED') return;
+
+      const execRes = await durableWorker.executeJob({ job, leaseId: claimRes.lease.id });
+      expect(execRes.result.status).toBe('FAILED');
+
+      const rows = await new PgOutboxRepository(pool).listByStatus('PENDING', 20);
+      expect(rows.map((r) => r.eventType).sort()).toEqual(['JobFailed', 'JobStarted']);
+      expect(rows.some((r) => r.eventType === 'JobQueued')).toBe(false);
+      expect(eventPayload(rows.find((r) => r.eventType === 'JobFailed')!)).toMatchObject({
+        failure_kind: 'FAILED',
+        retry_scheduled: false,
+        exit_code: 7,
+      });
+    });
+
+    it('co-commits JobFailed(failure_kind TIMED_OUT) for a durable execution that times out', async () => {
+      if (!dockerAvailable) return;
+      await pool.query('DELETE FROM outbox_events;');
+
+      const { run } = await createTestPipelineAndRun('outbox-tout');
+      const jobId = createJobId(`job-outbox-tout-${Date.now()}`);
+      const job = new Job({
+        id: jobId,
+        pipelineRunId: run.id,
+        stepName: 'sleep',
+        command: 'sleep 10',
+        initialStatus: 'QUEUED',
+      });
+      await jobRepo.save(job);
+
+      const claimRes = await durableWorker.claimJob(job.id);
+      expect(claimRes.status).toBe('ACQUIRED');
+      if (claimRes.status !== 'ACQUIRED') return;
+
+      const execRes = await durableWorker.executeJob({
+        job,
+        leaseId: claimRes.lease.id,
+        timeoutMs: 1500,
+      });
+      expect(execRes.result.status).toBe('TIMED_OUT');
+
+      const rows = await new PgOutboxRepository(pool).listByStatus('PENDING', 20);
+      expect(rows.map((r) => r.eventType).sort()).toEqual(['JobFailed', 'JobStarted']);
+      expect(eventPayload(rows.find((r) => r.eventType === 'JobFailed')!)).toMatchObject({
+        failure_kind: 'TIMED_OUT',
+        retry_scheduled: false,
+      });
+    });
+
+    it('writes zero JobClaimed rows to outbox_events on the worker claimJob path (scheduler is the sole producer)', async () => {
+      await pool.query('DELETE FROM outbox_events;');
+
+      const { run } = await createTestPipelineAndRun('outbox-claim');
+      const jobId = createJobId(`job-outbox-claim-${Date.now()}`);
+      const job = new Job({
+        id: jobId,
+        pipelineRunId: run.id,
+        stepName: 'noop',
+        command: 'echo hi',
+        initialStatus: 'QUEUED',
+      });
+      await jobRepo.save(job);
+
+      const claimRes = await durableWorker.claimJob(job.id);
+      expect(claimRes.status).toBe('ACQUIRED');
+      if (claimRes.status !== 'ACQUIRED') return;
+
+      const rows = await new PgOutboxRepository(pool).listByStatus('PENDING', 20);
+      expect(rows).toHaveLength(0);
+
+      await durableWorker.releaseLease(claimRes.lease.id, job.id);
+    });
   });
 });
