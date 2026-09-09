@@ -1,7 +1,9 @@
 import {
   createDatabasePool,
   DEFAULT_DATABASE_URL,
+  LeaseRecoveryService,
   PgJobRepository,
+  PgOutboxRepository,
   PgPipelineRepository,
   PgPipelineRunRepository,
   PgWorkerLeaseRepository,
@@ -26,7 +28,7 @@ import {
   createWorkerRegistry,
   type WorkerRegistry,
 } from '@forge/worker-registry';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createJobSourceFromRepository, ForgeScheduler } from './scheduler.js';
 
 describe('Real PostgreSQL, Redis & Queue Scheduler Integration Tests', () => {
@@ -495,5 +497,137 @@ describe('Real PostgreSQL, Redis & Queue Scheduler Integration Tests', () => {
       expect(activeLease?.id).toBe(scheduleResult.decision.lease?.id);
       expect(activeLease?.workerId).toBe(workerId);
     }
+  });
+
+  describe('Transactional outbox co-commit (PR 21)', () => {
+    const seedPipelineRunJob = async (opts: {
+      slug: string;
+      initialStatus?: 'PENDING' | 'QUEUED';
+      cpuCores?: number;
+    }): Promise<{
+      jobId: ReturnType<typeof createJobId>;
+      runId: ReturnType<typeof createPipelineRunId>;
+    }> => {
+      const pipeId = createPipelineId(`pipe-${opts.slug}`);
+      const runId = createPipelineRunId(`run-${opts.slug}`);
+      await pipelineRepo.save(
+        new Pipeline({
+          id: pipeId,
+          name: opts.slug,
+          steps: [{ name: 'step1', command: 'echo 1' }],
+        }),
+      );
+      await pipelineRunRepo.save(
+        new PipelineRun({ id: runId, pipelineId: pipeId, pipelineName: opts.slug }),
+      );
+      const jobId = createJobId(`job-${opts.slug}`);
+      await jobRepo.save(
+        new Job({
+          id: jobId,
+          pipelineRunId: runId,
+          stepName: 'step1',
+          command: 'echo 1',
+          initialStatus: opts.initialStatus ?? 'QUEUED',
+          requirements: { executor: 'docker', cpuCores: opts.cpuCores ?? 2 },
+        }),
+      );
+      return { jobId, runId };
+    };
+
+    it('placement co-commits a JobClaimed outbox row with the lease', async () => {
+      const publish = vi.fn().mockResolvedValue(undefined);
+      const leaseRepo = new PgWorkerLeaseRepository(pool);
+      const workerId = 'worker-outbox-claim';
+      await workerRegistry.register({
+        workerId,
+        capabilities: { executors: ['docker'] },
+        resources: { cpuCores: 4, memoryBytes: 8192 },
+      });
+      await workerRegistry.heartbeat(createWorkerId(workerId));
+
+      const { jobId } = await seedPipelineRunJob({ slug: 'outbox-claim' });
+
+      const outboxScheduler = new ForgeScheduler({
+        workerSource: workerRegistry,
+        jobSource: createJobSourceFromRepository(jobRepo),
+        leaseRepository: leaseRepo,
+        eventPublisher: { publish },
+        leaseDurationMs: 30000,
+      });
+
+      const decision = await outboxScheduler.schedule(jobId);
+      expect(decision.status).toBe('SCHEDULED');
+
+      const pending = await new PgOutboxRepository(pool).listByStatus('PENDING', 10);
+      const claimed = pending.filter((r) => r.eventType === 'JobClaimed');
+      expect(claimed).toHaveLength(1);
+      const inner = (claimed[0]!.payload as { payload: Record<string, unknown> }).payload;
+      expect(inner.job_id).toBe(jobId);
+      expect(inner.worker_id).toBe(workerId);
+
+      const lease = await pool.query(
+        `SELECT id FROM worker_leases WHERE job_id = $1 AND status = 'ACTIVE';`,
+        [jobId],
+      );
+      expect(lease.rowCount).toBe(1);
+    });
+
+    it('recovery sweep co-commits a WorkerLost outbox row', async () => {
+      const publish = vi.fn().mockResolvedValue(undefined);
+      const leaseRepo = new PgWorkerLeaseRepository(pool);
+      const workerId = 'worker-outbox-lost';
+      const { jobId } = await seedPipelineRunJob({ slug: 'outbox-lost' });
+
+      const claim = await leaseRepo.claim({ jobId, workerId, durationMs: 30000 });
+      expect(claim.status).toBe('ACQUIRED');
+      await pool.query(
+        `UPDATE worker_leases SET expires_at = NOW() - INTERVAL '5 minutes' WHERE job_id = $1;`,
+        [jobId],
+      );
+
+      const outboxScheduler = new ForgeScheduler({
+        leaseRepository: leaseRepo,
+        recoveryService: new LeaseRecoveryService(pool),
+        eventPublisher: { publish },
+      });
+
+      const result = await outboxScheduler.recoverExpiredLeases();
+      expect(result.recoveredCount).toBeGreaterThanOrEqual(1);
+
+      const pending = await new PgOutboxRepository(pool).listByStatus('PENDING', 10);
+      const lost = pending.filter((r) => r.eventType === 'WorkerLost');
+      expect(lost.length).toBeGreaterThanOrEqual(1);
+      const inner = (lost[0]!.payload as { payload: Record<string, unknown> }).payload;
+      expect(inner.job_id).toBe(jobId);
+      expect(inner.recovery_action).toBe('REQUEUED');
+    });
+
+    it('does not call eventPublisher.publish for JobClaimed when the outbox is enabled', async () => {
+      const publish = vi.fn().mockResolvedValue(undefined);
+      const leaseRepo = new PgWorkerLeaseRepository(pool);
+      const workerId = 'worker-outbox-nopublish';
+      await workerRegistry.register({
+        workerId,
+        capabilities: { executors: ['docker'] },
+        resources: { cpuCores: 4, memoryBytes: 8192 },
+      });
+      await workerRegistry.heartbeat(createWorkerId(workerId));
+
+      const { jobId } = await seedPipelineRunJob({ slug: 'outbox-nopublish' });
+
+      const outboxScheduler = new ForgeScheduler({
+        workerSource: workerRegistry,
+        jobSource: createJobSourceFromRepository(jobRepo),
+        leaseRepository: leaseRepo,
+        eventPublisher: { publish },
+        leaseDurationMs: 30000,
+      });
+
+      const decision = await outboxScheduler.schedule(jobId);
+      expect(decision.status).toBe('SCHEDULED');
+      expect(publish).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event_type: 'JobClaimed' }),
+      );
+    });
   });
 });

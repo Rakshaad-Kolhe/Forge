@@ -8,7 +8,9 @@
     { "path": "../../packages/contracts" },
     { "path": "../../packages/config" },
     { "path": "../../packages/logging" },
-    { "path": "../../packages/events" }
+    { "path": "../../packages/events" },
+    { "path": "../../packages/database" },
+    { "path": "../../packages/outbox" }
   ],
   "include": ["src/**/*"]
 }
