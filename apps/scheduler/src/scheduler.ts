@@ -331,6 +331,15 @@ export class ForgeScheduler implements Scheduler {
   }
 
   /**
+   * Whether recovery-sweep events (`WorkerLost`) should be co-committed to the outbox.
+   * Unlike {@link outboxEnabled}, this does NOT require `claimBatch` — the recovery mapper
+   * enqueues through `LeaseRecoveryService`'s own transaction, not the lease-claim path.
+   */
+  private get recoveryOutboxEnabled(): boolean {
+    return Boolean(this.eventPublisher);
+  }
+
+  /**
    * Pure mapper: a freshly-acquired lease → a `JobClaimed` outbox row. Passed to
    * `claimBatch({ pendingOutbox })` so the row is inserted in the same transaction as the
    * lease. Runs no SQL; needs the minted `lease_id` / `lease_expires_at`, hence a function.
@@ -944,7 +953,7 @@ export class ForgeScheduler implements Scheduler {
     // transaction (single authoritative producer — never also published best-effort).
     return this.recoveryService.recoverExpiredLeases(
       options,
-      this.outboxEnabled ? this.workerLostRowMapper : undefined,
+      this.recoveryOutboxEnabled ? this.workerLostRowMapper : undefined,
     );
   }
 

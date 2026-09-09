@@ -980,13 +980,16 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
     return { bus, events };
   };
 
-  // PR 21: JobStarted / terminal / JobQueued are now co-committed to the transactional
-  // outbox (they require a `pool`); only JobLogChunk stays on the best-effort bus. These
-  // pool-less unit tests therefore assert the bus receives ONLY JobLogChunk and that
-  // execution behaviour is unchanged. The durable rows are asserted in
-  // `worker-execution.integration.test.ts` (real PostgreSQL + Docker).
-  it('publishes only the best-effort JobLogChunk on the bus for a successful execution', async () => {
-    const { bus, events } = collectorBus();
+  // PR 21: JobStarted / terminal / JobQueued are co-committed to the transactional outbox
+  // (they require a `pool`); only JobLogChunk stays on the best-effort bus. The final fix
+  // wave then widened the worker `pool`-required guard: a configured `eventPublisher`
+  // without a transactional `pool` is now rejected outright (previously allowed as long as
+  // no `jobRepository` was also configured, which silently dropped every durable lifecycle
+  // event). These pool-less scenarios therefore assert the guard rejection; the bus-vs-outbox
+  // routing and the JobLogChunk payload shape are covered against real PostgreSQL + Docker
+  // in `worker-execution.integration.test.ts`.
+  it('rejects a successful-execution run when a publisher is configured without a transactional pool', async () => {
+    const { bus } = collectorBus();
     const lease = leaseRecord('lease-ev-1', 'job-ev-1');
     const attempt = mockAttempt('job-ev-1-attempt-1');
 
@@ -1003,28 +1006,17 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       eventPublisher: bus,
     });
 
-    const { result } = await worker.executeJob({
-      job: mockJob('job-ev-1', attempt) as unknown as Job,
-      leaseId: 'lease-ev-1',
-    });
-
-    expect(result.status).toBe('SUCCEEDED');
-    expect(events.map((e) => e.event_type)).toEqual(['JobLogChunk']);
-    expect(events[0]).toMatchObject({
-      event_type: 'JobLogChunk',
-      payload: {
-        stream: 'stdout',
-        sequence: 0,
-        chunk: 'build ok\n',
-        final: true,
-        truncated: false,
-      },
-    });
+    await expect(
+      worker.executeJob({
+        job: mockJob('job-ev-1', attempt) as unknown as Job,
+        leaseId: 'lease-ev-1',
+      }),
+    ).rejects.toThrow(/transactional pool/);
     await bus.close();
   });
 
-  it('does not publish JobFailed / JobQueued on the bus when a non-retryable attempt fails', async () => {
-    const { bus, events } = collectorBus();
+  it('rejects a non-retryable-failure run when a publisher is configured without a transactional pool', async () => {
+    const { bus } = collectorBus();
     const lease = leaseRecord('lease-ev-2', 'job-ev-2');
     const attempt = mockAttempt('job-ev-2-attempt-1');
 
@@ -1046,22 +1038,17 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       eventPublisher: bus,
     });
 
-    const { result, retryDecision } = await worker.executeJob({
-      job: mockJob('job-ev-2', attempt) as unknown as Job,
-      leaseId: 'lease-ev-2',
-    });
-
-    expect(result.status).toBe('FAILED');
-    expect(retryDecision?.action).not.toBe('RETRY');
-    // Only the derived best-effort stderr log chunk reaches the bus.
-    expect(events.map((e) => e.event_type)).toEqual(['JobLogChunk']);
-    expect(events.some((e) => e.event_type === 'JobFailed')).toBe(false);
-    expect(events.some((e) => e.event_type === 'JobQueued')).toBe(false);
+    await expect(
+      worker.executeJob({
+        job: mockJob('job-ev-2', attempt) as unknown as Job,
+        leaseId: 'lease-ev-2',
+      }),
+    ).rejects.toThrow(/transactional pool/);
     await bus.close();
   });
 
-  it('does not publish JobCancelled on the bus when the execution is cancelled', async () => {
-    const { bus, events } = collectorBus();
+  it('rejects a cancelled-execution run when a publisher is configured without a transactional pool', async () => {
+    const { bus } = collectorBus();
     const lease = leaseRecord('lease-ev-3', 'job-ev-3');
     const attempt = mockAttempt('job-ev-3-attempt-1');
     const job = mockJob('job-ev-3', attempt);
@@ -1081,19 +1068,17 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       eventPublisher: bus,
     });
 
-    const { result } = await worker.executeJob({
-      job: job as unknown as Job,
-      leaseId: 'lease-ev-3',
-    });
-
-    expect(result.status).toBe('CANCELLED');
-    expect(job.cancel).toHaveBeenCalled();
-    expect(events.some((e) => e.event_type === 'JobCancelled')).toBe(false);
+    await expect(
+      worker.executeJob({
+        job: job as unknown as Job,
+        leaseId: 'lease-ev-3',
+      }),
+    ).rejects.toThrow(/transactional pool/);
     await bus.close();
   });
 
-  it('does not publish a JobFailed lifecycle event on the bus for a wall-clock timeout', async () => {
-    const { bus, events } = collectorBus();
+  it('rejects a wall-clock-timeout run when a publisher is configured without a transactional pool', async () => {
+    const { bus } = collectorBus();
     const lease = leaseRecord('lease-ev-4', 'job-ev-4');
     const attempt = mockAttempt('job-ev-4-attempt-1');
     const job = mockJob('job-ev-4', attempt);
@@ -1115,19 +1100,17 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       eventPublisher: bus,
     });
 
-    const { result } = await worker.executeJob({
-      job: job as unknown as Job,
-      leaseId: 'lease-ev-4',
-    });
-
-    expect(result.status).toBe('TIMED_OUT');
-    expect(job.timeout).toHaveBeenCalled();
-    expect(events.some((e) => e.event_type === 'JobFailed')).toBe(false);
+    await expect(
+      worker.executeJob({
+        job: job as unknown as Job,
+        leaseId: 'lease-ev-4',
+      }),
+    ).rejects.toThrow(/transactional pool/);
     await bus.close();
   });
 
-  it('does not publish JobFailed / JobQueued on the bus when a retry is scheduled', async () => {
-    const { bus, events } = collectorBus();
+  it('rejects a retry-scheduled run when a publisher is configured without a transactional pool', async () => {
+    const { bus } = collectorBus();
     const lease = leaseRecord('lease-ev-5', 'job-ev-5');
     const attempt = {
       ...mockAttempt('job-ev-5-attempt-1'),
@@ -1164,15 +1147,12 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       nextAttemptAt: new Date('2026-09-08T12:05:00.000Z'),
     });
 
-    const { retryDecision } = await worker.executeJob({
-      job: job as unknown as Job,
-      leaseId: 'lease-ev-5',
-    });
-
-    expect(retryDecision?.action).toBe('RETRY');
-    expect(job.transitionTo).toHaveBeenCalledWith('QUEUED');
-    expect(events.some((e) => e.event_type === 'JobFailed')).toBe(false);
-    expect(events.some((e) => e.event_type === 'JobQueued')).toBe(false);
+    await expect(
+      worker.executeJob({
+        job: job as unknown as Job,
+        leaseId: 'lease-ev-5',
+      }),
+    ).rejects.toThrow(/transactional pool/);
     await bus.close();
   });
 
@@ -1226,20 +1206,13 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
     await bus.close();
   });
 
-  it('a failing best-effort publisher never breaks execution and the failure is logged', async () => {
-    const logs: string[] = [];
-    const logger = createLogger({
-      service: 'worker',
-      environment: 'test',
-      writeFn: (m) => logs.push(m),
-    });
+  it('rejects a publisher configured without a transactional pool before any execution begins', async () => {
     const lease = leaseRecord('lease-ev-6', 'job-ev-6');
     const attempt = mockAttempt('job-ev-6-attempt-1');
     const publish = vi.fn().mockRejectedValue(new Error('bus offline'));
 
     const worker = startWorker({
       workerId: 'worker-ev',
-      logger,
       leaseRepository: leaseRepoFor(lease),
       executor: {
         name: 'mock',
@@ -1249,16 +1222,14 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       eventPublisher: { publish },
     });
 
-    const { result } = await worker.executeJob({
-      job: mockJob('job-ev-6', attempt) as unknown as Job,
-      leaseId: 'lease-ev-6',
-    });
-
-    expect(result.status).toBe('SUCCEEDED');
-    // The only bus publish is the best-effort JobLogChunk; its rejection is swallowed + logged.
-    expect(publish).toHaveBeenCalledTimes(1);
-    expect(publish.mock.calls[0]?.[0]).toMatchObject({ event_type: 'JobLogChunk' });
-    expect(logs.some((l) => l.includes('Event publication failed'))).toBe(true);
+    await expect(
+      worker.executeJob({
+        job: mockJob('job-ev-6', attempt) as unknown as Job,
+        leaseId: 'lease-ev-6',
+      }),
+    ).rejects.toThrow(/transactional pool/);
+    // The guard fires before any executor or publisher call.
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it('emits nothing and behaves normally when no eventPublisher is configured', async () => {
@@ -1362,17 +1333,15 @@ describe('Worker durable events guard (PR 21)', () => {
     expect(result.status).toBe('SUCCEEDED');
   });
 
-  it('executeJob does not fire the guard for a publisher with no persistence at all', async () => {
+  it('executeJob throws for a publisher with no transactional pool even when no other persistence is configured', async () => {
     const shell = startWorker({
       workerId: 'worker-guard-3',
       eventPublisher: { publish: async () => {} },
       executor: okExecutor(),
     });
 
-    const { result } = await shell.executeJob({
-      job: guardJob() as unknown as Job,
-      leaseId: 'l1',
-    });
-    expect(result.status).toBe('SUCCEEDED');
+    await expect(
+      shell.executeJob({ job: guardJob() as unknown as Job, leaseId: 'l1' }),
+    ).rejects.toThrow(/transactional pool/);
   });
 });

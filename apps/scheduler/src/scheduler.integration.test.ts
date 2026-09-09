@@ -602,6 +602,37 @@ describe('Real PostgreSQL, Redis & Queue Scheduler Integration Tests', () => {
       expect(inner.recovery_action).toBe('REQUEUED');
     });
 
+    it('recovery-only scheduler (no leaseRepository) still co-commits a WorkerLost outbox row', async () => {
+      const publish = vi.fn().mockResolvedValue(undefined);
+      // A local lease repo is used ONLY to seed an expired ACTIVE lease; it is NOT wired
+      // into the scheduler under test.
+      const seedLeaseRepo = new PgWorkerLeaseRepository(pool);
+      const workerId = 'worker-outbox-lost-recovery-only';
+      const { jobId } = await seedPipelineRunJob({ slug: 'outbox-lost-recovery-only' });
+
+      const claim = await seedLeaseRepo.claim({ jobId, workerId, durationMs: 30000 });
+      expect(claim.status).toBe('ACQUIRED');
+      await pool.query(
+        `UPDATE worker_leases SET expires_at = NOW() - INTERVAL '5 minutes' WHERE job_id = $1;`,
+        [jobId],
+      );
+
+      const recoveryOnlyScheduler = new ForgeScheduler({
+        recoveryService: new LeaseRecoveryService(pool),
+        eventPublisher: { publish },
+      });
+
+      const result = await recoveryOnlyScheduler.recoverExpiredLeases();
+      expect(result.recoveredCount).toBeGreaterThanOrEqual(1);
+
+      const pending = await new PgOutboxRepository(pool).listByStatus('PENDING', 10);
+      const lost = pending.filter((r) => r.eventType === 'WorkerLost');
+      expect(lost.length).toBeGreaterThanOrEqual(1);
+      const inner = (lost[0]!.payload as { payload: Record<string, unknown> }).payload;
+      expect(inner.job_id).toBe(jobId);
+      expect(inner.recovery_action).toBe('REQUEUED');
+    });
+
     it('does not call eventPublisher.publish for JobClaimed when the outbox is enabled', async () => {
       const publish = vi.fn().mockResolvedValue(undefined);
       const leaseRepo = new PgWorkerLeaseRepository(pool);
