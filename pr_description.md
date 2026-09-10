@@ -31,10 +31,9 @@ fan-out, and latency measurement. No auto-escalation was needed — started at T
 All `[VERIFIED]` against the `feat/pr-21-outbox` tree:
 
 - **Branch discrepancy.** The session launched on `feat/pr-19-execution-engine`, which has
-  **no `packages/events` and no `packages/outbox`**. PR 20 and PR 21 live only on
-  `feat/pr-21-outbox` (checked out in `.claude/worktrees/pr-21-outbox`); `main` is still at
-  the PR 16 merge. Reported to the user; PR 22 was branched from `feat/pr-21-outbox` into a
-  new worktree.
+  **no `packages/events` and no `packages/outbox`**. PR 20 and PR 21 were subsequently merged
+  into `main` (via PR #20 and PR #21). PR 22 was branched from the `feat/pr-21-outbox` tip
+  into this worktree and cleanly targets `main`.
 - **`@forge/events` (PR 20).** `EventPublisher` / `EventSubscriber` are a transport-neutral
   seam; `InProcessEventBus` is the only implementation. `parseForgeEvent` (zod) strips
   unknown fields, rejects a wrong `version`. §14.8 fixes the ordering caveat: a terminal
@@ -417,5 +416,4 @@ diff hygiene, plus `tsc -b` / `eslint .` / `prettier --check .` / `vitest` /
 
 ## 23. Merge Recommendation
 
-**READY TO MERGE** — onto `feat/pr-21-outbox` (which must merge first; `main` is still at
-PR 16).
+**READY TO MERGE** — onto `main` (PR 20 and PR 21 have merged into `main`).
