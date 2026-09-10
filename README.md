@@ -24,11 +24,13 @@ This repository is currently at **PR 21: Durable Transactional Outbox**.
   - `@forge/executor`: Sandboxed container execution engine implementing `Executor` with production-oriented `DockerExecutor`, ephemeral temporary workspace management, non-root user execution (`--user 1000:1000`), container isolation (no privileged mode, no host Docker socket mount, bridge networking), resource limit enforcement (CPU, memory, unverified GPU status), wall-clock timeout supervision (`docker stop` -> `docker kill`), bounded stdout/stderr capture with truncation protection, and guaranteed teardown in `finally` blocks.
   - `@forge/events`: Neutral, transport-independent typed event architecture — versioned `ForgeEventEnvelope` with Forge-generated immutable `event_id` (UUID v4) and domain correlation ids, discriminated `ForgeEvent` union with compile-time exhaustiveness, zod validation (`parseForgeEvent`, unknown-field stripping, unknown-version rejection), `EventPublisher` / `EventSubscriber` seam, `InProcessEventBus` (subscriber-failure isolation, explicit idempotent shutdown, no global singleton, no deduplication), and post-execution `JobLogChunk` derivation from the bounded PR 19 capture. Notifications of committed state transitions only — at-least-once, no exactly-once delivery, no global ordering; PostgreSQL stays authoritative. Lifecycle events tied to a `jobs` / `worker_leases` transition are now recorded durably via the PR 21 transactional outbox (see `@forge/outbox`); `JobLogChunk` / `WorkerHeartbeat` / `WorkerRegistered` stay best-effort.
   - `@forge/outbox`: Durable event transport — `OutboxDispatcher` polls the `outbox_events` table, fenced-claims a bounded batch (`claim_token` regenerated per claim/reclaim), publishes each event through the `EventPublisher` seam under a bounded timeout, and checkpoints `PUBLISHED` / retries with jitter-free exponential backoff / marks `DEAD` only after the configured genuine transport rejections. Conservative `PUBLISHED`-only retention (default 7 days; `DEAD` retained for manual triage). At-least-once, no exactly-once delivery; consumers must tolerate duplicates. Hosted by `apps/scheduler` when a database pool and publisher are configured.
+  - `@forge/realtime`: Transient cross-process realtime transport (PR 22) — composes behind the PR 20 seam as `RedisEventPublisher implements EventPublisher` and `RedisEventSubscriber implements EventSubscriber` over a single logical Redis Pub/Sub channel (`forge:realtime:events`). Re-runs `parseForgeEvent` on the wire (envelope never mutated; unknown fields stripped; wrong version rejected). Redis is transient: a publish failure from the outbox dispatcher leaves the durable `outbox_events` row `PENDING` for retry. No replay, no exactly-once, no global ordering.
 - **Service Shells & Applications**:
   - `apps/api`: Express HTTP server exposing only `GET /health`.
   - `apps/scheduler`: Task scheduler service (`@forge/scheduler`) providing operational eligibility evaluation (`READY + ALIVE`), exclusion of `DRAINING` workers, deterministic worker selection policy (`DeterministicFirstEligible`), baseline priority scheduling policy (`HighestPriorityFirstPolicy`), starvation-prevention queue aging policy (`FairAgingPriorityPolicy` computing dynamic effective priority with bounded age bonus), virtual time injection across ordering and placement, canonical alphanumeric tie-breaking, retry fairness reset invariant (`nextAttemptAt` anchor), non-blocking unschedulable semantics, batch evaluation, unacknowledged queue recoverability, atomic distributed worker lease acquisition via PostgreSQL, due retry job discovery (`scheduleDueJobs`) with non-blocking backoff awareness (`RETRY_BACKOFF_ACTIVE`), integrated lease recovery loop (`recoverExpiredLeases`, `startRecoveryLoop`), and opt-in best-effort typed lifecycle event emission (`JobClaimed` on lease acquisition, `WorkerLost` per reconciled lease) after the authoritative commit.
   - `apps/worker`: Worker daemon with automated registration, capability reporting, periodic heartbeat renewal, lease lifecycle management (`claimJob`, `renewLease`, `releaseLease`), containerized job execution (`executeJob`) with active lease validation, periodic lease renewal, definitive lease-loss abort protection, pure retry policy evaluation, transactional PostgreSQL persistence, per-attempt lease isolation enabling worker hopping, three-phase shutdown lifecycle (`READY -> DRAINING -> OFFLINE`), immediate claim/execution rejection during drain, bounded in-flight execution drain supervision, and opt-in best-effort typed lifecycle event emission (`WorkerRegistered`, `WorkerHeartbeat`, `JobStarted`, derived `JobLogChunk`, terminal `JobSucceeded` / `JobFailed` / `JobCancelled`, and `JobQueued` on retry re-queue) after each authoritative persist.
   - `apps/cli`: CLI executable supporting `--help` and `--version`.
+  - `apps/realtime-gateway`: Dedicated WebSocket gateway service (PR 22) — subscribes to the realtime Redis channel and fans committed `ForgeEvent`s out to authenticated WebSocket clients. Versioned client protocol (`ready` / `subscribe` / `unsubscribe` / `event` / `pong` / `error`), handshake pipeline (origin allowlist → shared-secret auth via `Authorization: Bearer` or the `forge.v1.token.<token>` subprotocol → instance capacity), a pluggable `SubscriptionAuthorizer` seam (shipped `AllowAuthenticatedAuthorizer` is a documented placeholder pending a resource-ownership model), bounded connections / subscriptions / outbound queue with slow-consumer disconnect, ping/pong liveness (distinct from the worker heartbeat), and bounded idempotent graceful shutdown. No database access. Realtime delivery is best-effort — a disconnected client recovers authoritative state through the API.
   - `apps/web`: Next.js landing page displaying architectural boundaries.
 - **Testing Foundation**: Vitest test runner configured with automated tests for config, logging, CLI, API health, pipeline domain core, capability/resource matching, job priority validation, PostgreSQL persistence, Redis coordination, FIFO job queue, worker registry, worker service shell, scheduler selection policies, priority ordering, worker lease lifecycle & concurrency races, Docker executor unit & live container integration, worker execution persistence integration, live end-to-end retry & attempt orchestration integration, PostgreSQL lease recovery & DLQ integration, live Docker worker loss recovery & graceful drain integration, and controlled starvation prevention experiments.
 - **Linting & Code Style**: ESLint 9 flat configuration and Prettier.
@@ -37,8 +39,9 @@ This repository is currently at **PR 21: Durable Transactional Outbox**.
 ### Planned (Future PRs)
 
 - Kubernetes executor (Pods and Jobs)
-- Real-time WebSocket streaming for live logs and job statuses
-- Authentication, API keys, and role-based access control
+- Durable log history / event replay service (PR 22 realtime delivery is transient — no replay)
+- Real per-resource authorization for realtime subscriptions (PR 22 ships a documented placeholder authorizer)
+- Authentication, API keys, and role-based access control (PR 22 gateway auth is a shared-secret bridge, one opaque principal)
 - Webhook ingestion (GitHub, GitLab)
 - Production metrics and OpenTelemetry tracing
 - Full CLI workflow commands (`forge run`, `forge logs`, `forge deploy`)
@@ -147,11 +150,21 @@ npm run format:check
 ```bash
 npm run benchmark:scheduler
 npm run benchmark:outbox
+npm run benchmark:websocket   # needs Redis (docker compose up -d); measures publish -> client receipt latency
 ```
 
 ---
 
 ## Running Applications (PR 01 Shells)
+
+### Realtime Gateway
+
+```bash
+docker compose up -d                         # Redis
+export WEBSOCKET_AUTH_TOKEN=dev-secret        # required; the gateway refuses to start without it
+export REALTIME_PUBLISH_ENABLED=true          # so the scheduler/worker publish onto the transport
+npm run start -w apps/realtime-gateway        # listens on WEBSOCKET_PORT (default 3100)
+```
 
 ### API Service
 

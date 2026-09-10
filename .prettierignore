@@ -15,3 +15,6 @@ benchmarks/reports/
 # Git-ignored tooling scratch (SDD ledgers, worktrees) — not repo source.
 .superpowers/
 .claude/
+
+# Per-task working state (objective / progress / verification ledger) — not repo source.
+.task/

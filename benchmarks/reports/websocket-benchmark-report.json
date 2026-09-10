@@ -1,0 +1,298 @@
+{
+  "environment": {
+    "gitCommit": "fc7e89c38e588238dfaf1d413105bd04d0f0565b",
+    "gitBranch": "feat/pr-22-realtime-gateway",
+    "platform": "win32",
+    "arch": "x64",
+    "cpuModel": "Intel(R) Core(TM) i7-14650HX",
+    "cpuCores": 24,
+    "totalMemoryBytes": 16869285888,
+    "freeMemoryBytes": 1420541952,
+    "nodeVersion": "v25.2.1",
+    "postgresVersion": "not-applicable",
+    "redisVersion": "reachable",
+    "timestamp": "2026-09-10T02:48:29.990Z"
+  },
+  "configuration": {
+    "redisUrl": "redis://127.0.0.1:6379",
+    "authToken": "benchmark-secret-token",
+    "fanoutSizes": [
+      1,
+      10,
+      50,
+      100
+    ],
+    "lifecycleEvents": 200,
+    "logChunkEvents": 100,
+    "logChunkBytes": 65536,
+    "warmupEvents": 20,
+    "receiptTimeoutMs": 5000
+  },
+  "results": [
+    {
+      "phase": "lifecycle",
+      "fanout": 1,
+      "events": 200,
+      "payloadBytes": 334,
+      "firstReceiptMs": {
+        "count": 200,
+        "min": 0.2698,
+        "max": 1.1892,
+        "mean": 0.5603,
+        "median": 0.5552,
+        "p95": 0.7806,
+        "p99": 1.0476,
+        "stdDev": 0.1355,
+        "opsPerSec": 1784.72
+      },
+      "fullFanoutMs": {
+        "count": 200,
+        "min": 0.2738,
+        "max": 1.2128,
+        "mean": 0.5702,
+        "median": 0.5643,
+        "p95": 0.7937,
+        "p99": 1.066,
+        "stdDev": 0.138,
+        "opsPerSec": 1753.84
+      },
+      "throughputEventsPerSec": 1690.5,
+      "rssDeltaBytes": 1425408,
+      "cpuUserMicros": 94000,
+      "cpuSystemMicros": 47000,
+      "clientCloses": 1
+    },
+    {
+      "phase": "lifecycle",
+      "fanout": 10,
+      "events": 200,
+      "payloadBytes": 334,
+      "firstReceiptMs": {
+        "count": 200,
+        "min": 0.5478,
+        "max": 1.3376,
+        "mean": 0.6948,
+        "median": 0.6676,
+        "p95": 0.8691,
+        "p99": 0.9787,
+        "stdDev": 0.1011,
+        "opsPerSec": 1439.17
+      },
+      "fullFanoutMs": {
+        "count": 200,
+        "min": 0.6371,
+        "max": 1.5119,
+        "mean": 0.8005,
+        "median": 0.761,
+        "p95": 1.0276,
+        "p99": 1.4243,
+        "stdDev": 0.1341,
+        "opsPerSec": 1249.15
+      },
+      "throughputEventsPerSec": 1218.5,
+      "rssDeltaBytes": 950272,
+      "cpuUserMicros": 93000,
+      "cpuSystemMicros": 16000,
+      "clientCloses": 10
+    },
+    {
+      "phase": "lifecycle",
+      "fanout": 50,
+      "events": 200,
+      "payloadBytes": 334,
+      "firstReceiptMs": {
+        "count": 200,
+        "min": 1.323,
+        "max": 2.9508,
+        "mean": 1.5976,
+        "median": 1.5334,
+        "p95": 2.1337,
+        "p99": 2.6057,
+        "stdDev": 0.2611,
+        "opsPerSec": 625.94
+      },
+      "fullFanoutMs": {
+        "count": 200,
+        "min": 1.7353,
+        "max": 3.9365,
+        "mean": 2.0893,
+        "median": 2.0074,
+        "p95": 2.9905,
+        "p99": 3.6069,
+        "stdDev": 0.3596,
+        "opsPerSec": 478.63
+      },
+      "throughputEventsPerSec": 473.8,
+      "rssDeltaBytes": 6873088,
+      "cpuUserMicros": 312000,
+      "cpuSystemMicros": 94000,
+      "clientCloses": 50
+    },
+    {
+      "phase": "lifecycle",
+      "fanout": 100,
+      "events": 200,
+      "payloadBytes": 334,
+      "firstReceiptMs": {
+        "count": 200,
+        "min": 1.8964,
+        "max": 5.7412,
+        "mean": 2.2878,
+        "median": 2.1484,
+        "p95": 2.8991,
+        "p99": 4.7596,
+        "stdDev": 0.5177,
+        "opsPerSec": 437.11
+      },
+      "fullFanoutMs": {
+        "count": 200,
+        "min": 2.6866,
+        "max": 7.6144,
+        "mean": 3.1621,
+        "median": 2.9868,
+        "p95": 4.1475,
+        "p99": 6.604,
+        "stdDev": 0.6804,
+        "opsPerSec": 316.25
+      },
+      "throughputEventsPerSec": 313.9,
+      "rssDeltaBytes": 1486848,
+      "cpuUserMicros": 344000,
+      "cpuSystemMicros": 218000,
+      "clientCloses": 100
+    },
+    {
+      "phase": "logchunk",
+      "fanout": 1,
+      "events": 100,
+      "payloadBytes": 65536,
+      "firstReceiptMs": {
+        "count": 100,
+        "min": 42.6653,
+        "max": 69.6795,
+        "mean": 45.6997,
+        "median": 44.1073,
+        "p95": 55.7847,
+        "p99": 67.2216,
+        "stdDev": 4.8477,
+        "opsPerSec": 21.88
+      },
+      "fullFanoutMs": {
+        "count": 100,
+        "min": 42.672,
+        "max": 69.6967,
+        "mean": 45.7118,
+        "median": 44.1176,
+        "p95": 55.7948,
+        "p99": 67.229,
+        "stdDev": 4.8491,
+        "opsPerSec": 21.88
+      },
+      "throughputEventsPerSec": 21.8,
+      "rssDeltaBytes": 24350720,
+      "cpuUserMicros": 156000,
+      "cpuSystemMicros": 125000,
+      "clientCloses": 1
+    },
+    {
+      "phase": "logchunk",
+      "fanout": 10,
+      "events": 100,
+      "payloadBytes": 65536,
+      "firstReceiptMs": {
+        "count": 100,
+        "min": 43.0785,
+        "max": 69.0754,
+        "mean": 48.9794,
+        "median": 47.5459,
+        "p95": 62.1824,
+        "p99": 68.6918,
+        "stdDev": 5.0814,
+        "opsPerSec": 20.42
+      },
+      "fullFanoutMs": {
+        "count": 100,
+        "min": 44.2477,
+        "max": 82.5229,
+        "mean": 53.5649,
+        "median": 50.7311,
+        "p95": 69.519,
+        "p99": 76.4263,
+        "stdDev": 7.858,
+        "opsPerSec": 18.67
+      },
+      "throughputEventsPerSec": 18.6,
+      "rssDeltaBytes": 33615872,
+      "cpuUserMicros": 531000,
+      "cpuSystemMicros": 454000,
+      "clientCloses": 10
+    },
+    {
+      "phase": "logchunk",
+      "fanout": 50,
+      "events": 100,
+      "payloadBytes": 65536,
+      "firstReceiptMs": {
+        "count": 100,
+        "min": 48.0028,
+        "max": 91.2523,
+        "mean": 60.8938,
+        "median": 61.3945,
+        "p95": 68.9523,
+        "p99": 87.175,
+        "stdDev": 7.1105,
+        "opsPerSec": 16.42
+      },
+      "fullFanoutMs": {
+        "count": 100,
+        "min": 53.5976,
+        "max": 110.6987,
+        "mean": 75.3101,
+        "median": 79.4222,
+        "p95": 90.57,
+        "p99": 100.4556,
+        "stdDev": 11.3803,
+        "opsPerSec": 13.28
+      },
+      "throughputEventsPerSec": 13.3,
+      "rssDeltaBytes": 12951552,
+      "cpuUserMicros": 2813000,
+      "cpuSystemMicros": 1157000,
+      "clientCloses": 50
+    },
+    {
+      "phase": "logchunk",
+      "fanout": 100,
+      "events": 100,
+      "payloadBytes": 65536,
+      "firstReceiptMs": {
+        "count": 100,
+        "min": 52.8951,
+        "max": 112.9077,
+        "mean": 74.0426,
+        "median": 78.3573,
+        "p95": 92.2519,
+        "p99": 106.43,
+        "stdDev": 13.1399,
+        "opsPerSec": 13.51
+      },
+      "fullFanoutMs": {
+        "count": 100,
+        "min": 59.8266,
+        "max": 147.9624,
+        "mean": 100.5892,
+        "median": 111.815,
+        "p95": 132.5439,
+        "p99": 142.9331,
+        "stdDev": 24.4021,
+        "opsPerSec": 9.94
+      },
+      "throughputEventsPerSec": 9.9,
+      "rssDeltaBytes": 19259392,
+      "cpuUserMicros": 3547000,
+      "cpuSystemMicros": 2250000,
+      "clientCloses": 100
+    }
+  ],
+  "generatedAt": "2026-09-10T02:49:05.660Z"
+}
