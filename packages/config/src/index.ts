@@ -20,6 +20,14 @@ import {
   DEFAULT_OUTBOX_RETENTION_MAX_AGE_MS,
   DEFAULT_OUTBOX_RETENTION_BATCH_SIZE,
   DEFAULT_OUTBOX_RETENTION_EVERY_N_TICKS,
+  FORGE_REALTIME_EVENT_CHANNEL,
+  DEFAULT_REALTIME_PUBLISH_TIMEOUT_MS,
+  DEFAULT_WEBSOCKET_PORT,
+  DEFAULT_WEBSOCKET_MAX_CONNECTIONS,
+  DEFAULT_WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION,
+  DEFAULT_WEBSOCKET_MAX_PENDING_MESSAGES,
+  DEFAULT_WEBSOCKET_MAX_MESSAGE_BYTES,
+  DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS,
 } from '@forge/contracts';
 
 /**
@@ -256,6 +264,63 @@ const configSchema = z
       .default(String(DEFAULT_OUTBOX_RETENTION_EVERY_N_TICKS))
       .transform(Number)
       .pipe(z.number().int().min(1, 'OUTBOX_RETENTION_EVERY_N_TICKS must be at least 1')),
+    REALTIME_PUBLISH_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    REALTIME_REDIS_CHANNEL: z.string().min(1).default(FORGE_REALTIME_EVENT_CHANNEL),
+    REALTIME_PUBLISH_TIMEOUT_MS: z
+      .string()
+      .regex(/^\d+$/, 'REALTIME_PUBLISH_TIMEOUT_MS must be a valid integer')
+      .default(String(DEFAULT_REALTIME_PUBLISH_TIMEOUT_MS))
+      .transform(Number)
+      .pipe(z.number().int().min(100, 'REALTIME_PUBLISH_TIMEOUT_MS must be at least 100ms')),
+    WEBSOCKET_PORT: z
+      .string()
+      .regex(/^\d+$/, 'WEBSOCKET_PORT must be a valid integer')
+      .default(String(DEFAULT_WEBSOCKET_PORT))
+      .transform(Number)
+      .pipe(
+        z
+          .number()
+          .int()
+          .min(1, 'WEBSOCKET_PORT must be at least 1')
+          .max(65535, 'WEBSOCKET_PORT cannot exceed 65535'),
+      ),
+    WEBSOCKET_MAX_CONNECTIONS: z
+      .string()
+      .regex(/^\d+$/, 'WEBSOCKET_MAX_CONNECTIONS must be a valid integer')
+      .default(String(DEFAULT_WEBSOCKET_MAX_CONNECTIONS))
+      .transform(Number)
+      .pipe(z.number().int().min(1, 'WEBSOCKET_MAX_CONNECTIONS must be at least 1')),
+    WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION: z
+      .string()
+      .regex(/^\d+$/, 'WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION must be a valid integer')
+      .default(String(DEFAULT_WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION))
+      .transform(Number)
+      .pipe(
+        z.number().int().min(1, 'WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION must be at least 1'),
+      ),
+    WEBSOCKET_MAX_PENDING_MESSAGES: z
+      .string()
+      .regex(/^\d+$/, 'WEBSOCKET_MAX_PENDING_MESSAGES must be a valid integer')
+      .default(String(DEFAULT_WEBSOCKET_MAX_PENDING_MESSAGES))
+      .transform(Number)
+      .pipe(z.number().int().min(1, 'WEBSOCKET_MAX_PENDING_MESSAGES must be at least 1')),
+    WEBSOCKET_MAX_MESSAGE_BYTES: z
+      .string()
+      .regex(/^\d+$/, 'WEBSOCKET_MAX_MESSAGE_BYTES must be a valid integer')
+      .default(String(DEFAULT_WEBSOCKET_MAX_MESSAGE_BYTES))
+      .transform(Number)
+      .pipe(z.number().int().min(64, 'WEBSOCKET_MAX_MESSAGE_BYTES must be at least 64 bytes')),
+    WEBSOCKET_HEARTBEAT_INTERVAL_MS: z
+      .string()
+      .regex(/^\d+$/, 'WEBSOCKET_HEARTBEAT_INTERVAL_MS must be a valid integer')
+      .default(String(DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS))
+      .transform(Number)
+      .pipe(z.number().int().min(1000, 'WEBSOCKET_HEARTBEAT_INTERVAL_MS must be at least 1000ms')),
+    WEBSOCKET_ORIGIN_ALLOWLIST: z.string().default(''),
+    WEBSOCKET_AUTH_TOKEN: z.string().optional(),
   })
   .refine((data) => data.WORKER_HEARTBEAT_TTL_SECONDS * 1000 > data.WORKER_HEARTBEAT_INTERVAL_MS, {
     message:
@@ -353,7 +418,22 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     OUTBOX_RETENTION_MAX_AGE_MS,
     OUTBOX_RETENTION_BATCH_SIZE,
     OUTBOX_RETENTION_EVERY_N_TICKS,
+    REALTIME_PUBLISH_ENABLED,
+    REALTIME_REDIS_CHANNEL,
+    REALTIME_PUBLISH_TIMEOUT_MS,
+    WEBSOCKET_PORT,
+    WEBSOCKET_MAX_CONNECTIONS,
+    WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION,
+    WEBSOCKET_MAX_PENDING_MESSAGES,
+    WEBSOCKET_MAX_MESSAGE_BYTES,
+    WEBSOCKET_HEARTBEAT_INTERVAL_MS,
+    WEBSOCKET_ORIGIN_ALLOWLIST,
+    WEBSOCKET_AUTH_TOKEN,
   } = result.data;
+
+  const websocketOriginAllowlist = WEBSOCKET_ORIGIN_ALLOWLIST.split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
 
   return {
     nodeEnv: NODE_ENV as NodeEnvironment,
@@ -388,5 +468,16 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     outboxRetentionMaxAgeMs: OUTBOX_RETENTION_MAX_AGE_MS,
     outboxRetentionBatchSize: OUTBOX_RETENTION_BATCH_SIZE,
     outboxRetentionEveryNTicks: OUTBOX_RETENTION_EVERY_N_TICKS,
+    realtimePublishEnabled: REALTIME_PUBLISH_ENABLED,
+    realtimeRedisChannel: REALTIME_REDIS_CHANNEL,
+    realtimePublishTimeoutMs: REALTIME_PUBLISH_TIMEOUT_MS,
+    websocketPort: WEBSOCKET_PORT,
+    websocketMaxConnections: WEBSOCKET_MAX_CONNECTIONS,
+    websocketMaxSubscriptionsPerConnection: WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION,
+    websocketMaxPendingMessages: WEBSOCKET_MAX_PENDING_MESSAGES,
+    websocketMaxMessageBytes: WEBSOCKET_MAX_MESSAGE_BYTES,
+    websocketHeartbeatIntervalMs: WEBSOCKET_HEARTBEAT_INTERVAL_MS,
+    websocketOriginAllowlist,
+    ...(WEBSOCKET_AUTH_TOKEN !== undefined ? { websocketAuthToken: WEBSOCKET_AUTH_TOKEN } : {}),
   };
 }

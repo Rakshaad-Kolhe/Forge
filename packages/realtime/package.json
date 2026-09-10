@@ -1,0 +1,26 @@
+{
+  "name": "@forge/realtime",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\""
+  },
+  "dependencies": {
+    "@forge/contracts": "*",
+    "@forge/events": "*",
+    "@forge/logging": "*",
+    "@forge/redis": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4"
+  }
+}

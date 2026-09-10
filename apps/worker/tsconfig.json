@@ -12,6 +12,8 @@
     { "path": "../../packages/database" },
     { "path": "../../packages/executor" },
     { "path": "../../packages/pipeline" },
+    { "path": "../../packages/realtime" },
+    { "path": "../../packages/redis" },
     { "path": "../../packages/worker-registry" }
   ],
   "include": ["src/**/*"]

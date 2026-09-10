@@ -10,7 +10,9 @@
     { "path": "../../packages/logging" },
     { "path": "../../packages/events" },
     { "path": "../../packages/database" },
-    { "path": "../../packages/outbox" }
+    { "path": "../../packages/outbox" },
+    { "path": "../../packages/realtime" },
+    { "path": "../../packages/redis" }
   ],
   "include": ["src/**/*"]
 }

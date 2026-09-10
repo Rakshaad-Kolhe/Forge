@@ -31,3 +31,6 @@ yarn-error.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Per-task working state (objective / progress / verification ledger)
+.task/

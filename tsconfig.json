@@ -12,9 +12,11 @@
     { "path": "packages/worker-registry" },
     { "path": "packages/executor" },
     { "path": "packages/outbox" },
+    { "path": "packages/realtime" },
     { "path": "apps/api" },
     { "path": "apps/scheduler" },
     { "path": "apps/worker" },
-    { "path": "apps/cli" }
+    { "path": "apps/cli" },
+    { "path": "apps/realtime-gateway" }
   ]
 }

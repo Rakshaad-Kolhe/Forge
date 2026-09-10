@@ -37,6 +37,16 @@ describe('loadConfig', () => {
       outboxRetentionMaxAgeMs: 604800000,
       outboxRetentionBatchSize: 500,
       outboxRetentionEveryNTicks: 60,
+      realtimePublishEnabled: false,
+      realtimeRedisChannel: 'forge:realtime:events',
+      realtimePublishTimeoutMs: 5000,
+      websocketPort: 3100,
+      websocketMaxConnections: 1000,
+      websocketMaxSubscriptionsPerConnection: 50,
+      websocketMaxPendingMessages: 100,
+      websocketMaxMessageBytes: 16384,
+      websocketHeartbeatIntervalMs: 30000,
+      websocketOriginAllowlist: [],
     });
   });
 
@@ -63,6 +73,17 @@ describe('loadConfig', () => {
       FAIRNESS_AGING_INTERVAL_MS: '30000',
       FAIRNESS_AGE_BONUS_STEP: '25',
       FAIRNESS_MAX_AGE_BONUS: '1000',
+      REALTIME_PUBLISH_ENABLED: 'true',
+      REALTIME_REDIS_CHANNEL: 'forge:realtime:events:test',
+      REALTIME_PUBLISH_TIMEOUT_MS: '2000',
+      WEBSOCKET_PORT: '4100',
+      WEBSOCKET_MAX_CONNECTIONS: '25',
+      WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION: '5',
+      WEBSOCKET_MAX_PENDING_MESSAGES: '10',
+      WEBSOCKET_MAX_MESSAGE_BYTES: '2048',
+      WEBSOCKET_HEARTBEAT_INTERVAL_MS: '5000',
+      WEBSOCKET_ORIGIN_ALLOWLIST: 'https://a.example.com, https://b.example.com',
+      WEBSOCKET_AUTH_TOKEN: 'test-secret',
     });
     expect(config).toEqual({
       nodeEnv: 'production',
@@ -97,6 +118,17 @@ describe('loadConfig', () => {
       outboxRetentionMaxAgeMs: 604800000,
       outboxRetentionBatchSize: 500,
       outboxRetentionEveryNTicks: 60,
+      realtimePublishEnabled: true,
+      realtimeRedisChannel: 'forge:realtime:events:test',
+      realtimePublishTimeoutMs: 2000,
+      websocketPort: 4100,
+      websocketMaxConnections: 25,
+      websocketMaxSubscriptionsPerConnection: 5,
+      websocketMaxPendingMessages: 10,
+      websocketMaxMessageBytes: 2048,
+      websocketHeartbeatIntervalMs: 5000,
+      websocketOriginAllowlist: ['https://a.example.com', 'https://b.example.com'],
+      websocketAuthToken: 'test-secret',
     });
   });
 
@@ -266,6 +298,43 @@ describe('loadConfig', () => {
       );
       expect(() => loadConfig({ OUTBOX_MAX_DELIVERY_ATTEMPTS: '500' })).toThrow(
         /OUTBOX_MAX_DELIVERY_ATTEMPTS/,
+      );
+    });
+  });
+
+  describe('realtime & websocket gateway configuration (PR 22)', () => {
+    it('applies safe realtime/websocket defaults with realtime publishing disabled', () => {
+      const cfg = loadConfig({});
+      expect(cfg.realtimePublishEnabled).toBe(false);
+      expect(cfg.realtimeRedisChannel).toBe('forge:realtime:events');
+      expect(cfg.realtimePublishTimeoutMs).toBe(5000);
+      expect(cfg.websocketPort).toBe(3100);
+      expect(cfg.websocketMaxConnections).toBe(1000);
+      expect(cfg.websocketMaxSubscriptionsPerConnection).toBe(50);
+      expect(cfg.websocketMaxPendingMessages).toBe(100);
+      expect(cfg.websocketMaxMessageBytes).toBe(16384);
+      expect(cfg.websocketHeartbeatIntervalMs).toBe(30000);
+      expect(cfg.websocketOriginAllowlist).toEqual([]);
+      expect(cfg.websocketAuthToken).toBeUndefined();
+    });
+
+    it('parses REALTIME_PUBLISH_ENABLED as a strict boolean', () => {
+      expect(loadConfig({ REALTIME_PUBLISH_ENABLED: 'true' }).realtimePublishEnabled).toBe(true);
+      expect(loadConfig({ REALTIME_PUBLISH_ENABLED: 'false' }).realtimePublishEnabled).toBe(false);
+      expect(() => loadConfig({ REALTIME_PUBLISH_ENABLED: 'yes' })).toThrow(ConfigValidationError);
+    });
+
+    it('splits WEBSOCKET_ORIGIN_ALLOWLIST on commas and trims blanks', () => {
+      expect(
+        loadConfig({ WEBSOCKET_ORIGIN_ALLOWLIST: ' https://x.example , ,https://y.example ' })
+          .websocketOriginAllowlist,
+      ).toEqual(['https://x.example', 'https://y.example']);
+    });
+
+    it('rejects an out-of-range WEBSOCKET_PORT and a sub-second heartbeat interval', () => {
+      expect(() => loadConfig({ WEBSOCKET_PORT: '70000' })).toThrow(/WEBSOCKET_PORT/);
+      expect(() => loadConfig({ WEBSOCKET_HEARTBEAT_INTERVAL_MS: '250' })).toThrow(
+        /WEBSOCKET_HEARTBEAT_INTERVAL_MS/,
       );
     });
   });

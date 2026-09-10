@@ -78,6 +78,17 @@ export interface AppConfig {
   outboxRetentionMaxAgeMs: number;
   outboxRetentionBatchSize: number;
   outboxRetentionEveryNTicks: number;
+  realtimePublishEnabled: boolean;
+  realtimeRedisChannel: string;
+  realtimePublishTimeoutMs: number;
+  websocketPort: number;
+  websocketMaxConnections: number;
+  websocketMaxSubscriptionsPerConnection: number;
+  websocketMaxPendingMessages: number;
+  websocketMaxMessageBytes: number;
+  websocketHeartbeatIntervalMs: number;
+  websocketOriginAllowlist: readonly string[];
+  websocketAuthToken?: string;
 }
 
 /**
@@ -671,3 +682,49 @@ export const DEFAULT_OUTBOX_RETENTION_BATCH_SIZE = 500;
  * Default frequency (every 60 ticks) for outbox retention cleanup sweep.
  */
 export const DEFAULT_OUTBOX_RETENTION_EVERY_N_TICKS = 60;
+
+/* -------------------------------------------------------------------------- *
+ * Realtime transport & WebSocket gateway (PR 22)
+ *
+ * The realtime layer is transient: Redis Pub/Sub carries committed ForgeEvents
+ * across processes and the WebSocket gateway fans them out to clients. Neither
+ * is authoritative — a disconnected client may miss events and recovers by
+ * refreshing authoritative state through the API. PostgreSQL + the durable
+ * outbox (PR 21) remain the source of truth.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Single logical Redis Pub/Sub channel every ForgeEvent is published on. Clients
+ * never see or control this — the gateway owns it and filters per subscription.
+ */
+export const FORGE_REALTIME_EVENT_CHANNEL = 'forge:realtime:events';
+
+/**
+ * Version of the WebSocket application protocol spoken by the gateway. Bumped
+ * only on an incompatible client-facing change.
+ */
+export const REALTIME_PROTOCOL_VERSION = 1;
+
+/** Default timeout (5,000 ms) for a single realtime publish to Redis. */
+export const DEFAULT_REALTIME_PUBLISH_TIMEOUT_MS = 5000;
+
+/** Default WebSocket gateway listen port. */
+export const DEFAULT_WEBSOCKET_PORT = 3100;
+
+/** Default ceiling on concurrent WebSocket connections per gateway instance. */
+export const DEFAULT_WEBSOCKET_MAX_CONNECTIONS = 1000;
+
+/** Default ceiling on active subscriptions per WebSocket connection. */
+export const DEFAULT_WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION = 50;
+
+/**
+ * Default ceiling on buffered outbound messages for one slow connection before
+ * it is disconnected (backpressure bound).
+ */
+export const DEFAULT_WEBSOCKET_MAX_PENDING_MESSAGES = 100;
+
+/** Default maximum accepted inbound client message size (16 KiB). */
+export const DEFAULT_WEBSOCKET_MAX_MESSAGE_BYTES = 16384;
+
+/** Default WebSocket liveness ping interval (30,000 ms). */
+export const DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS = 30000;

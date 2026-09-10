@@ -18,6 +18,8 @@
     "@forge/outbox": "*",
     "@forge/pipeline": "*",
     "@forge/queue": "*",
+    "@forge/realtime": "*",
+    "@forge/redis": "*",
     "@forge/worker-registry": "*"
   }
 }

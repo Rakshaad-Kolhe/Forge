@@ -1,7 +1,8 @@
 # Forge V2 — Typed Event Architecture (PR 20)
 
-Status: **implemented** (PR 20); **extended by PR 21** (§18 — durable transactional outbox).
-Supersedes nothing. Extended by future realtime/transport PRs.
+Status: **implemented** (PR 20); **extended by PR 21** (§18 — durable transactional outbox);
+**extended by PR 22** (§19 — realtime transport & WebSocket gateway).
+Supersedes nothing.
 
 PR 19 made Forge capable of executing work. PR 20 makes that execution **observable** through
 a stable architectural event boundary — without building the realtime delivery system yet.
@@ -545,3 +546,137 @@ throughput against a subscriber-less bus is ~90 events/sec for single-event tick
 ~200–260 events/sec for batches of 10–500. The `claimBatch` selection currently plans as a
 **Seq Scan + quicksort** — the `status = 'PENDING' OR status = 'CLAIMED'` predicate prevents
 the `idx_outbox_events_claimable` partial index from applying (follow-up work).
+
+---
+
+## 19. Realtime transport & WebSocket gateway (PR 22)
+
+PR 20 defined events; PR 21 made the lifecycle ones durable. PR 22 makes committed events
+**visible across processes in real time**, without changing what is authoritative.
+
+```text
+PostgreSQL (state + outbox_events)      durable, authoritative
+      │  OutboxDispatcher (PR 21)
+      ▼
+EventPublisher  ──►  RedisEventPublisher (@forge/realtime)
+      │
+      ▼
+Redis Pub/Sub   single logical channel  forge:realtime:events        transient
+      │
+      ▼
+RedisEventSubscriber (@forge/realtime)  ──►  RealtimeGateway (apps/realtime-gateway)
+      │
+      ▼
+WebSocket clients (browser / CLI / future consumers)                  transient
+```
+
+### 19.1 What is new
+
+- **`@forge/redis`** gains `createRedisPubSub(...)` — a Pub/Sub adapter over `ioredis` with a
+  dedicated subscriber connection, idempotent `connect`/`close`, per-channel handler fan-out
+  with failure isolation, and a connection-state hook. No new dependency.
+- **`@forge/realtime`** (new package) composes behind the PR 20 seam:
+  `RedisEventPublisher implements EventPublisher`, `RedisEventSubscriber implements
+EventSubscriber`. Both run `parseForgeEvent` on the wire (envelope never mutated; unknown
+  additive fields stripped; wrong `version` rejected). One logical channel — never
+  per-client or per-job channels.
+- **`apps/realtime-gateway`** (new service) hosts the WebSocket gateway. It has **no database
+  access**. It is not authoritative for anything.
+- Wiring is opt-in behind `REALTIME_PUBLISH_ENABLED` (default `false`). The scheduler's
+  `OutboxDispatcher` gets a `RedisEventPublisher`; a directly-run worker routes its
+  best-effort events (notably `JobLogChunk`) onto the same transport. Default off ⇒ no
+  behaviour change.
+
+### 19.2 Transport semantics — stated plainly
+
+| Layer                                             | Guarantee                                                                                                                        |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL state + `outbox_events` row (one tx)   | **Durable.** Unaffected by Redis or WebSocket availability.                                                                      |
+| `OutboxDispatcher → RedisEventPublisher → Redis`  | **At-least-once** for the durable lifecycle events (§18.3). Redis down ⇒ publish fails ⇒ the row stays `PENDING` and is retried. |
+| `Redis → RedisEventSubscriber → Gateway → client` | **Best-effort.** A disconnected client misses events. A slow client is disconnected. No replay.                                  |
+| `JobLogChunk` end-to-end                          | **Best-effort** the whole way (`safePublish` on the worker side, §18.3).                                                         |
+
+No exactly-once WebSocket delivery. No global or cross-producer ordering (§18.4 still holds —
+a client may see `JobSucceeded`/`JobFailed` before some or all `JobLogChunk` for that job).
+A client may receive the same `event_id` more than once depending on transport timing; a
+future client dedupes on `event_id`.
+
+### 19.3 Reconnect
+
+```text
+connect → authenticate → ready → subscribe → live events
+```
+
+On reconnect the client re-authenticates, re-subscribes, and **refreshes authoritative state
+through the API** (the API is where completeness comes from). Reconnect does **not** recover
+events missed during the gap — Redis Pub/Sub is transient and there is no durable WebSocket
+history in PR 22. A future history/replay service may provide that.
+
+### 19.4 Client protocol (v1)
+
+Client → server: `subscribe`, `unsubscribe`, `ping` — each `{ type, v: 1, target?: { kind:
+"pipeline"|"run"|"job", id } }`. Server → client: `ready`, `subscribed`, `unsubscribed`,
+`event` (the full PR 20 envelope), `pong`, `closing`, `error` (`code` ∈ `INVALID_MESSAGE`,
+`UNSUPPORTED_VERSION`, `UNAUTHORIZED`, `FORBIDDEN`, `INVALID_SUBSCRIPTION`,
+`SUBSCRIPTION_LIMIT`, `RATE_LIMITED`, `MESSAGE_TOO_LARGE`, `SERVER_SHUTTING_DOWN`,
+`SLOW_CONSUMER`). Redis details are never exposed to the client; clients cannot name a
+channel.
+
+### 19.5 Security
+
+- **Origin**: validated against a configured allowlist (`WEBSOCKET_ORIGIN_ALLOWLIST`); empty
+  allowlist rejects every browser `Origin`; `*` is never accepted. A request with no `Origin`
+  (non-browser client) is allowed but still needs the token.
+- **Authentication**: a shared secret (`WEBSOCKET_AUTH_TOKEN`) presented as
+  `Authorization: Bearer <token>` or the `forge.v1.token.<token>` subprotocol — never in the
+  URL query string; compared with `timingSafeEqual`. This is the **smallest explicit bridge**
+  over Forge's currently-absent session model: it proves the caller holds the gateway secret
+  and yields **one opaque principal**, not per-user identity. The gateway refuses to start
+  without a non-empty token.
+- **Authorization**: a `SubscriptionAuthorizer` seam runs `authenticate → resolve → authorize
+→ subscribe`. The shipped `AllowAuthenticatedAuthorizer` is a **documented placeholder** —
+  Forge has no user/project/resource-ownership model yet, so any authenticated principal may
+  subscribe to any well-formed target. Replacing it when the resource API lands is a
+  one-line wiring change.
+- **Bounds**: max connections/instance, max subscriptions/connection, bounded outbound queue
+  (slow-consumer disconnect), inbound message-size cap. No secret, token, cookie, or full
+  sensitive payload is logged.
+
+### 19.6 Backpressure
+
+Each connection has a bounded outbound queue (`WEBSOCKET_MAX_PENDING_MESSAGES`). When it is
+exceeded the connection is closed with `SLOW_CONSUMER` and fully released; its memory
+footprint is capped and it never stalls other connections (each owns its own queue and
+socket). The client reconnects and refreshes authoritative state.
+
+### 19.7 Redis failure
+
+- **Startup outage**: the gateway starts in a **degraded mode** — it keeps accepting
+  WebSocket handshakes; `ioredis` keeps retrying and auto-resubscribes on recovery. No events
+  flow until Redis is back. PostgreSQL and `outbox_events` are untouched; no false terminal
+  events.
+- **Runtime drop**: existing WebSocket connections stay open and deterministic; the gateway
+  does not crash. On recovery `ioredis` re-establishes the subscription automatically. Missed
+  events are not replayed (durable recovery is the PostgreSQL outbox, not Pub/Sub).
+
+### 19.8 Multi-gateway
+
+Multiple gateway instances share the one Redis channel. Each keeps only its own
+connection/subscription state (an inverted key → connections index for fan-out). No shared
+in-process memory; correctness needs no sticky sessions.
+
+### 19.9 Configuration (all defaulted)
+
+`REALTIME_PUBLISH_ENABLED` (default `false`), `REALTIME_REDIS_CHANNEL`,
+`REALTIME_PUBLISH_TIMEOUT_MS`, `WEBSOCKET_PORT`, `WEBSOCKET_MAX_CONNECTIONS`,
+`WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION`, `WEBSOCKET_MAX_PENDING_MESSAGES`,
+`WEBSOCKET_MAX_MESSAGE_BYTES`, `WEBSOCKET_HEARTBEAT_INTERVAL_MS`,
+`WEBSOCKET_ORIGIN_ALLOWLIST` (CSV), `WEBSOCKET_AUTH_TOKEN` (enforced non-empty at gateway
+startup only). See `.env.example` and `packages/config/src/index.ts`.
+
+### 19.10 Measured latency
+
+`npm run benchmark:websocket` (`benchmarks/reports/websocket-benchmark-report.json`) measures
+`publish()` → first-client-receipt over the real Redis path at fan-out 1/10/50/100, for
+lifecycle events and bounded `JobLogChunk`. Numbers characterise the benchmark host and its
+loopback — they are **not** a production-scale or throughput claim.

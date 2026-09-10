@@ -3,6 +3,8 @@ import { PgOutboxRepository, type DatabasePool } from '@forge/database';
 import type { EventPublisher } from '@forge/events';
 import { createLogger, type Logger } from '@forge/logging';
 import { OutboxDispatcher, type OutboxDispatcherConfig } from '@forge/outbox';
+import { RedisEventPublisher } from '@forge/realtime';
+import { createRedisPubSub, type RedisPubSub } from '@forge/redis';
 
 export * from './types.js';
 export * from './errors.js';
@@ -22,6 +24,13 @@ export interface SchedulerShell {
  * {@link OutboxDispatcher}: when BOTH a database `pool` and an event `publisher` are
  * supplied, the shell owns a dispatcher that drains the transactional outbox and stops it
  * on `stop()`. With neither supplied, behaviour is unchanged — a log-only shell.
+ *
+ * PR 22: when a `pool` is supplied without an explicit `publisher` and
+ * `REALTIME_PUBLISH_ENABLED=true`, the shell constructs a {@link RedisEventPublisher} over
+ * a dedicated {@link RedisPubSub} and hands it to the dispatcher. Redis is transient — if
+ * it is unreachable the publish fails, the dispatcher records a delivery failure, and the
+ * event stays durable in `outbox_events` for a later retry. An explicit `publisher` always
+ * wins (tests inject an in-process one).
  */
 export function startScheduler(options?: {
   logger?: Logger;
@@ -37,8 +46,28 @@ export function startScheduler(options?: {
       minLevel: config.logLevel,
     });
 
+  let realtimePubSub: RedisPubSub | undefined;
+  let publisher = options?.publisher;
+  if (options?.pool && !publisher && config.realtimePublishEnabled) {
+    realtimePubSub = createRedisPubSub({ url: config.redisUrl }, logger);
+    void realtimePubSub.connect().catch((err: unknown) => {
+      logger.error('realtime.redis_connect_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    publisher = new RedisEventPublisher({
+      pubsub: realtimePubSub,
+      channel: config.realtimeRedisChannel,
+      publishTimeoutMs: config.realtimePublishTimeoutMs,
+      logger,
+    });
+    logger.info('Realtime event publisher wired into outbox dispatcher', {
+      channel: config.realtimeRedisChannel,
+    });
+  }
+
   let dispatcher: OutboxDispatcher | undefined;
-  if (options?.pool && options?.publisher) {
+  if (options?.pool && publisher) {
     const dispatcherConfig: OutboxDispatcherConfig = {
       pollIntervalMs: config.outboxDispatchPollIntervalMs,
       batchSize: config.outboxDispatchBatchSize,
@@ -55,7 +84,7 @@ export function startScheduler(options?: {
       repository: new PgOutboxRepository(options.pool, {
         maxPayloadBytes: config.outboxMaxPayloadBytes,
       }),
-      publisher: options.publisher,
+      publisher,
       logger,
       config: dispatcherConfig,
     });
@@ -72,6 +101,7 @@ export function startScheduler(options?: {
   return {
     stop: () => {
       void dispatcher?.stop();
+      void realtimePubSub?.close();
       logger.info('Forge Scheduler service shell stopped');
     },
   };

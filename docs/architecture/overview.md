@@ -120,5 +120,7 @@ PR 01: Repository Foundation & Architecture Contract (Completed)
   │
   ├──► PR 20: Typed Event Architecture & Execution Lifecycle Events (Completed)
   │
-  └──► PR 21: Durable Transactional Outbox (Current)
+  ├──► PR 21: Durable Transactional Outbox (Completed)
+  │
+  └──► PR 22: Realtime Event Transport & WebSocket Gateway (Current)
 ```
