@@ -1,456 +1,421 @@
-# PR 21: Durable Event Transport & PostgreSQL Transactional Outbox
+# PR 22 — Realtime Event Transport & WebSocket Gateway
 
-Branch `feat/pr-21-outbox`, cut from `42cdf33` (PR 20 tip). 26 commits
-(`git log --oneline 42cdf33..HEAD`): 1 spec, 1 plan, 1 SDD-doc format pass, 20 feature/test
-commits, 3 fix rounds, 1 docs commit, 1 pre-gate `chore` commit (this task).
+Branch `feat/pr-22-realtime-gateway`, cut from `0263b68` (PR 21 tip). 3 feature commits:
 
-**Guarantee established:** a lifecycle event associated with a PostgreSQL `jobs` /
-`worker_leases` state transition is durably recorded in the **same transaction** as that
-transition; a dispatcher then delivers it. In the delivery-semantics wording used verbatim in
-the docs:
+| Commit    | Workstream | Scope                                                                                                      |
+| --------- | ---------- | ---------------------------------------------------------------------------------------------------------- |
+| `6243d10` | WS-A       | `@forge/redis` Pub/Sub adapter + `@forge/realtime` publisher/subscriber + config + scheduler/worker wiring |
+| `fc7e89c` | WS-B       | `apps/realtime-gateway` — protocol, auth, authz, origin, registry, backpressure, heartbeat, shutdown       |
+| `6eb573d` | WS-C       | `npm run benchmark:websocket` + docs (`events.md` §19, `invariants.md` §15, `overview.md`, `README.md`)    |
 
-> Forge durably records events transactionally with PostgreSQL state and delivers them at least
-> once; consumers must tolerate duplicates.
+**Guarantee established:** a committed Forge event becomes visible across processes in real
+time — `PostgreSQL + outbox` → `OutboxDispatcher` → `EventPublisher` → Redis Pub/Sub →
+WebSocket gateway → clients — **without changing what is authoritative**.
 
-**Not claimed:** exactly-once delivery, global ordering, or atomic DB↔external-transport commit.
+**Not claimed:** exactly-once WebSocket delivery, global/cross-producer ordering, durable
+WebSocket history, or event replay from Redis Pub/Sub. A disconnected client may miss events
+and recovers authoritative state through the API.
 
 ---
 
-## 1. Repository Inspection
+## 1. Task Classification
 
-Findings that shaped the design (all `[VERIFIED]` against the PR-20 tree):
-
-- **`packages/events/`** — `ForgeEvent` is a 13-variant discriminated union; every producer wired
-  in PR 20 publishes best-effort via `safePublish` **after** the domain commit
-  (`InProcessEventBus.publish` awaits subscribers sequentially, no timeout). That post-commit
-  `safePublish` is the failure window this PR closes.
-- **`packages/database/`** — `withTransaction(pool, cb)` hands the callback a `TransactionContext`
-  with every repo bound to one `pg.PoolClient` (`BEGIN → cb → COMMIT`, `ROLLBACK` on throw).
-  Migrations run from **inline `*_SQL` string constants** in `migrator.ts` `MIGRATIONS[]`
-  (`001`–`007`); the `src/migrations/sql/*.sql` files are drifted, unused copies.
-  `PgWorkerLeaseRepository.claimBatch` already runs a real `BEGIN/COMMIT/ROLLBACK` when
-  constructed on a pool (the scheduler path), so a lease INSERT and any co-inserted rows commit
-  or roll back together. `LeaseRecoveryService.recoverSingleLease` already runs inside a
-  `withTransaction`. `dead_letter_jobs` is a job-failure domain table (FKs, job-failure `reason`
-  vocabulary) — not reusable for event-delivery failure.
-- **`apps/worker/src/index.ts`** — `executeJob` already persists RUNNING and terminal state via
-  `withTransaction` when `options.pool` is set; a non-transactional `options.jobRepository`
-  fallback path also exists (no transaction, no outbox). The production entrypoint calls
-  `startWorker()` with no args (shell only) — the durability guarantee is contingent on the
-  future worker loop passing `pool`, which nothing enforced.
-- **`apps/scheduler/`** — `publishJobClaimed` / `publishWorkerLostForRecovery` were `safePublish`;
-  `startRecoveryLoop` (`setInterval` + `timer.unref()` + `isSweeping` reentrancy guard) is the
-  pattern mirrored for the dispatcher. `startScheduler()` is still a PR-01 log-only shell.
-- **`packages/config` / `packages/contracts`** — one big zod `configSchema` with the
-  `z.string().regex(/^\d+$/).default(...).transform(Number).pipe(...)` idiom + cross-field
-  `.refine`; `@forge/contracts` is a single zero-runtime-dep file. `DockerExecutor` takes plain
-  numeric options, not `@forge/config` — the precedent for keeping library packages
-  config-loader-free.
-
-## 2. Revised Design (adversarial review)
-
-The first PR-21 proposal was rewritten after an adversarial architecture review. The nine
-findings and how the shipped design resolves each:
-
-| #     | Finding                                                                                                                | Resolution                                                                                                                                                                                              |
-| ----- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A     | A single `attempt_count`++ at claim conflated process crash, checkpoint-write failure, and genuine transport rejection | Split into `dispatch_count` (claims + reclaims; diagnostic; never drives `DEAD`) and `delivery_attempt_count` (incremented **only** in `markRetry`, after a real `publish` threw/timed out)             |
-| B     | No fencing — a stale dispatcher could mutate a row a newer owner already reclaimed                                     | `claim_token` regenerated on every (re)claim; **every** mutating statement carries `WHERE id = $1 AND status = 'CLAIMED' AND claim_token = $2`; 0 rows ⇒ `CLAIM_LOST`, dispatcher discards              |
-| —     | `markPublished` / `markRetry` could resurrect `PUBLISHED → PENDING`                                                    | Structural: the fenced `WHERE status = 'CLAIMED'` on every mutation means no code path can set `PENDING` from `PUBLISHED`                                                                               |
-| —     | A generic `(txClient) => Promise<void>` escape hatch on `claimBatch`                                                   | Replaced with pure-data mappers (`rowForAcquired`, `outboxRowForRecord`) that return an `OutboxEnqueueInput` and run no SQL; all SQL stays in `PgOutboxRepository`, which owns the tx                   |
-| C     | Durability contingent on unenforced worker `pool` wiring                                                               | `executeJob` throws at entry when `eventPublisher` is configured without `pool`; new invariant §14.15; docs reframe the no-pool path as a durability hole, not a "degraded mode"                        |
-| Q4    | `JobClaimed` single-producer enforced only by convention                                                               | Only `claimBatch` (scheduler path) accepts `pendingOutbox`; the single-item `claim` (worker path) does not; regression test asserts the worker `claimJob` path writes zero `JobClaimed` rows            |
-| Q5/Q6 | Concurrent duplicate delivery beyond the crash window; a reclaim racing a slow live dispatcher                         | Separate `publishTimeoutMs`; refinement `claimTimeoutMs >= publishTimeoutMs + pollIntervalMs`; bounded `publish()` timeout; fencing makes the stale writer harmless; mandatory slow-publisher race test |
-| Q7    | 24 h retention too aggressive; retention + an unguarded UPDATE ⇒ silent loss                                           | Default 7 days (`0` disables); retention deletes only `PUBLISHED` rows under `FOR UPDATE SKIP LOCKED`; ships behind the fencing tests; `DEAD` never auto-deleted                                        |
-| Q8    | `JobLogChunk` outbox exclusion was an undocumented guarantee + an ordering inversion                                   | Explicit delivery-class table in `events.md`; invariant §14.8 rescoped to "within a delivery class"; ordering caveat documented                                                                         |
-| Q9    | `@forge/outbox → @forge/config` coupling; dispatcher hosted in `apps/scheduler`                                        | `@forge/outbox` takes a plain `OutboxDispatcherConfig`; zero `apps/scheduler` / `apps/*` imports in the package; hosting in `apps/scheduler` is wiring only, relocatable                                |
-| —     | An outbox param typed against `@forge/events` on a contract                                                            | `OutboxEnqueueInput` lives in zero-dep `@forge/contracts` as plain data; `@forge/database` never imports `@forge/events`                                                                                |
-
-## 3. Transactional Proof
-
-State transition and its outbox row commit or roll back as one unit — asserted on real
-PostgreSQL:
-
-- **`packages/database/src/outbox-transaction.integration.test.ts`** (3):
-  `commits the job row and the outbox row together`;
-  `rolls back the job row when the callback throws after enqueue` (neither row present);
-  `rolls back the job row when the outbox payload is oversized` (the `OutboxPayloadError` from
-  `tx.outbox.enqueue` unwinds the co-written `jobs.save`).
-- **`packages/database/src/repositories/pg-worker-lease-repository.integration.test.ts`** (4):
-  `co-commits a JobClaimed outbox row with a fresh lease`;
-  `does not enqueue for an idempotent re-claim`;
-  `rolls back the lease when the outbox enqueue fails` (no lease granted **and** no outbox row);
-  `the single-item claim() path writes no outbox row`.
-- **`packages/database/src/repositories/lease-recovery.integration.test.ts`** (3 new, +5 PR-20
-  unchanged): `co-commits a WorkerLost row when a lease is REQUEUED`;
-  `emits no outbox row for a NO_OP reconciliation`;
-  `rolls the recovery transaction back when the outbox enqueue fails` (job / `dead_letter_jobs`
-  writes unwound too).
-- **`packages/outbox/src/dispatcher.test.ts`** — `reconstructs the event from the stored payload
-(not from job state)` confirms the recovery path never reads live job rows.
-
-## 4. Fencing Proof
-
-**`packages/outbox/src/slow-publisher-fencing.race.test.ts`** — 1 test,
-`a stale dispatcher cannot mutate a row a newer owner reclaimed; no PUBLISHED→PENDING`. On real
-PG: dispatcher A claims (token `T1`); A's `publish` sleeps past `claimTimeoutMs`; dispatcher B
-reclaims (token `T2`), publishes, `markPublished(T2)` → `OK`; A wakes and calls
-`markPublished(id, T1)` → **`CLAIM_LOST`**; A performs no further mutation; the row stays
-`PUBLISHED`. Guard assertions rule out a false positive (B's summary shows `published === 1`,
-the final status is `PUBLISHED`, never `PENDING`). **Result: PASS.**
-
-Fencing is also exercised by `dispatcher.test.ts` (`on markPublished CLAIM_LOST → counts
-claimLost, does not touch the row`), `pg-outbox-repository.integration.test.ts`
-(`markPublished with a stale token → CLAIM_LOST and no mutation`,
-`markRetry with a stale token → CLAIM_LOST, no PUBLISHED→PENDING resurrection`), and the
-N-dispatcher concurrency test below.
-
-## 5. Retry Semantics
-
-Two counters, deliberately distinct (`outbox_events` columns, invariant §14.14):
-
-- **`dispatch_count`** — incremented on every claim and reclaim in `claimBatch`. Diagnostic
-  only. Never drives `DEAD`. A dispatcher that crashes after claiming but before publishing
-  costs one `dispatch_count` and **zero** delivery budget.
-- **`delivery_attempt_count`** — incremented **only** in `markRetry`, i.e. only after
-  `publisher.publish(event)` was actually invoked and threw or timed out. A successful
-  re-publish (the intended duplicate after a crash-before-`markPublished`) consumes no budget.
-
-`DEAD` iff `deliveryAttemptCount + 1 >= OUTBOX_MAX_DELIVERY_ATTEMPTS` at a **genuine** publish
-failure. `DEAD` means "delivery attempts exhausted without a confirmed success" — not "delivered
-but unrecorded", and never "a process died". A `DEAD` row retains its full payload,
-`last_error`, attempt counters, and ownership columns for triage.
-
-Asserted by `pg-outbox-repository.integration.test.ts`
-(`claimBatch ... bumps dispatch_count only`,
-`markRetry(exhausted=false) → PENDING, backoff, delivery_attempt_count++`,
-`markRetry(exhausted=true) → DEAD, retains payload + last_error + attempts`),
-`dispatcher.test.ts` (`transitions to DEAD after maxDeliveryAttempts genuine failures`,
-`counts reclaimed rows (dispatchCount >= 2)`), and `publisher-failure.test.ts`.
-
-## 6. Producer Authority
-
-Each durable event has exactly one authoritative producer (invariant §14.6, spec §10):
-
-| Durable event                                                                  | Sole authoritative producer                                                | Structural guard                                                                                                               |
-| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `JobClaimed`                                                                   | `ForgeScheduler` placement → `claimBatch(..., pendingOutbox)`              | the single-item `PgWorkerLeaseRepository.claim` (worker path) does not accept `pendingOutbox`; only `claimBatch` does          |
-| `JobStarted`, `JobSucceeded`, `JobFailed`, `JobCancelled`, `JobQueued` (retry) | `apps/worker` `executeJob` `withTransaction` blocks                        | only the RUNNING-commit and terminal-commit blocks enqueue them; the PR-20 best-effort `safePublish` for these five is removed |
-| `WorkerLost`                                                                   | `ForgeScheduler` recovery → `recoverSingleLease` mapper (`NO_OP` excluded) | `LeaseRecoveryService` enqueues only when the scheduler supplies the mapper                                                    |
-
-The single-producer boundary for `JobClaimed` is proven by
-**`apps/worker/src/worker-execution.integration.test.ts`** →
-`writes zero JobClaimed rows to outbox_events on the worker claimJob path (scheduler is the sole
-producer)`, and by **`apps/scheduler/src/scheduler.integration.test.ts`** →
-`does not call eventPublisher.publish for JobClaimed when the outbox is enabled` (no
-double-emit).
-
-Documented, not fixed (pre-existing PR-20 semantics, out of scope): one physical lease loss
-yields both `JobFailed{failure_kind:'LEASE_LOST'}` (worker) and
-`WorkerLost{recovery_action:'REQUEUED'}` (scheduler); `LeaseRecoveryService` requeue emits
-`WorkerLost` but not `JobQueued`.
-
-## 7. Failure Model
-
-Every scenario from spec §13, with the asserting test:
-
-| Scenario                                                   | Behaviour                                                                                         | Asserting test                                                                                                       |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| PostgreSQL unavailable                                     | state commit and outbox INSERT fail together (one tx)                                             | `outbox-transaction.integration.test.ts` (rollback cases)                                                            |
-| Outbox INSERT failure (oversize / invalid payload)         | whole transaction rolls back; domain row not persisted                                            | `outbox-transaction.integration.test.ts` → oversize case; `pg-worker-lease-repository` rollback case                 |
-| Publisher unavailable (`publish` throws)                   | row → `PENDING`, `delivery_attempt_count++`, backoff, `last_error`, ownership cleared             | `publisher-failure.test.ts`; `dispatcher.test.ts` → publisher-throw case                                             |
-| Publisher timeout (`publish` hangs > `publishTimeoutMs`)   | treated as a failed attempt → retry or `DEAD` per attempt count                                   | `dispatcher.test.ts` → `on publisher hang beyond publishTimeoutMs → treated as failed`                               |
-| Dispatcher crash **after claim**, before publish           | row reclaimable once `claimed_at < staleClaimBefore`; **no delivery budget burned**               | `pg-outbox-repository.integration.test.ts` → stale-CLAIMED reclaim case; `dispatcher.test.ts` → reclaimed-count case |
-| Dispatcher crash **after publish**, before `markPublished` | next dispatcher reclaims and re-publishes the **same `event_id`** — expected                      | `at-least-once.experiment.test.ts`                                                                                   |
-| Stale dispatcher wakes after a reclaim                     | fenced out — `CLAIM_LOST`, no mutation, no `PUBLISHED → PENDING`                                  | `slow-publisher-fencing.race.test.ts`                                                                                |
-| N dispatchers on one PG                                    | every event `PUBLISHED` at least once; no permanent `CLAIMED`; no two hold a row at once          | `dispatcher-concurrency.integration.test.ts` (`n` = 2, 5, 10)                                                        |
-| Retention sweep                                            | deletes only aged `PUBLISHED`; `PENDING` / `CLAIMED` / `DEAD` untouched; bounded; concurrent-safe | `retention.integration.test.ts` (3)                                                                                  |
-| `DEAD` row                                                 | retained in full, no auto-deletion                                                                | `pg-outbox-repository.integration.test.ts` → `markRetry(exhausted=true)` case                                        |
-
-## 8. Performance
-
-From `benchmarks/reports/outbox-benchmark-report.json` (regenerated this task; PG 18.6 on
-WSL2, Node v25.2.1, i7-14650HX, seed `909090`). Local numbers — **no production-capacity claim**.
-
-**A — transactional overhead** (`withTransaction` doing `jobs.save` + `jobAttempts.save`,
-2000 measured iterations per phase, all committed):
-
-| Phase                                   | Mean (ms) | Median | P95    | P99     | Ops/sec |
-| --------------------------------------- | --------- | ------ | ------ | ------- | ------- |
-| baseline (jobs.save + jobAttempts.save) | 6.6710    | 6.6721 | 8.7220 | 10.9906 | 148.9   |
-| with-outbox (+ `outbox.enqueue`)        | 7.5646    | 7.7496 | 9.7070 | 10.9871 | 131.5   |
-
-**Mean added cost of the co-committed `outbox.enqueue`: ≈ +0.5–0.9 ms/event** (this run:
-`overheadDeltaMs` = **+0.8936 ms**; the Task-18 reviewed run measured +0.52 ms — both are within
-the ~1.7 ms tx-noise stdev). A single extra fenced-column INSERT on the existing client.
-
-**B — dispatcher throughput** (`OutboxDispatcher.runOnce` → subscriber-less `InProcessEventBus`,
-20 iterations per batch size):
-
-| Batch (events) | Events/sec | Mean batch (ms) | Mean publish (ms) |
-| -------------- | ---------- | --------------- | ----------------- |
-| 1              | 118.4      | 8.44            | 0.008             |
-| 10             | 214.8      | 46.55           | 0.008             |
-| 50             | 245.6      | 203.61          | 0.007             |
-| 100            | 240.7      | 415.40          | 0.006             |
-| 500            | 249.5      | 2004.13         | 0.008             |
-
-Single-event ticks are claim/round-trip-bound (~90–120 events/s); batching amortises the claim
-round-trip and plateaus at **~210–260 events/s** against a no-op subscriber. Publish latency is
-negligible here — a real transport is the real ceiling.
-
-**C — claim-query `EXPLAIN (ANALYZE, BUFFERS)`** — see §9.
-
-## 9. EXPLAIN
-
-Actual plan for the `claimBatch` claimable SELECT against a table seeded with 5000 `PENDING`
-rows:
-
-```text
-Limit  (cost=1837.60..1838.85 rows=100 width=32) (actual time=2.187..2.257 rows=100.00 loops=1)
-  Buffers: shared hit=1634
-  ->  LockRows  (cost=1837.60..1900.10 rows=5000 width=32) (actual time=2.186..2.250 rows=100.00 loops=1)
-        Buffers: shared hit=1634
-        ->  Sort  (cost=1837.60..1850.10 rows=5000 width=32) (actual time=2.180..2.189 rows=100.00 loops=1)
-              Sort Key: occurred_at, id
-              Sort Method: quicksort  Memory: 466kB
-              Buffers: shared hit=1534
-              ->  Seq Scan on outbox_events  (cost=0.00..1646.50 rows=5000 width=32) (actual time=0.135..1.280 rows=5000.00 loops=1)
-                    Filter: ((((status)::text = 'PENDING'::text) AND (available_at <= now())) OR (((status)::text = 'CLAIMED'::text) AND (claimed_at < '2026-01-01 00:00:00.001+00'::timestamp with time zone)))
-                    Buffers: shared hit=1534
-Planning Time: 0.180 ms
-Execution Time: 2.285 ms
-```
-
-**Interpretation:** the partial index `idx_outbox_events_claimable` (`WHERE status = 'PENDING'`)
-is **not** used. The claim predicate is a disjunction —
-`(status = 'PENDING' AND available_at <= NOW()) OR (status = 'CLAIMED' AND claimed_at < $stale)`
-— and the `CLAIMED` arm is outside every partial index's `WHERE`, so the planner falls back to a
-`Seq Scan` + `quicksort` on `(occurred_at, id)`. At 5000 rows this is `hit=1534` shared buffers,
-exec **2.3 ms** — acceptable for the current scale, `O(table)` as the table grows.
-See Known Limitations (a) for the follow-up.
-
-## 10. Tests
-
-`npm test` (`vitest run`, `fileParallelism: false`, full repo incl. every live PG / Redis /
-Docker-over-TCP integration test): **64 files, 645 tests, all passing**, ~100 s.
-
-New / changed test files for PR 21:
-
-| Package / app      | File                                                              | Tests                     |
-| ------------------ | ----------------------------------------------------------------- | ------------------------- |
-| `@forge/contracts` | (type-only — none)                                                | —                         |
-| `@forge/config`    | `src/index.test.ts` (edit)                                        | 20 (11 new outbox cases)  |
-| `@forge/events`    | `src/outbox-input.test.ts`                                        | 3                         |
-| `@forge/database`  | `src/migrations/migrator.test.ts` (edit)                          | 4                         |
-| `@forge/database`  | `src/repositories/pg-outbox-repository.integration.test.ts`       | 20                        |
-| `@forge/database`  | `src/outbox-transaction.integration.test.ts`                      | 3                         |
-| `@forge/database`  | `src/repositories/pg-worker-lease-repository.integration.test.ts` | 4                         |
-| `@forge/database`  | `src/repositories/lease-recovery.integration.test.ts` (edit)      | 8 (3 new)                 |
-| `@forge/outbox`    | `src/backoff.test.ts`                                             | 4                         |
-| `@forge/outbox`    | `src/dispatcher.test.ts`                                          | 9                         |
-| `@forge/outbox`    | `src/dispatcher-concurrency.integration.test.ts`                  | 3 (n = 2, 5, 10)          |
-| `@forge/outbox`    | `src/slow-publisher-fencing.race.test.ts` (mandatory)             | 1                         |
-| `@forge/outbox`    | `src/at-least-once.experiment.test.ts` (mandatory)                | 1                         |
-| `@forge/outbox`    | `src/publisher-failure.test.ts`                                   | 1                         |
-| `@forge/outbox`    | `src/retention.integration.test.ts`                               | 3                         |
-| `apps/worker`      | `src/worker-execution.integration.test.ts` (edit)                 | 12 (7 new durable-outbox) |
-| `apps/worker`      | `src/index.test.ts` (edit)                                        | 23                        |
-| `apps/scheduler`   | `src/scheduler.integration.test.ts` (edit)                        | 9 (3 new outbox)          |
-| `apps/scheduler`   | `src/scheduler.test.ts` (edit)                                    | 42                        |
-
-All PR-20 `packages/events` tests and the existing `apps/worker` / `apps/scheduler` /
-`packages/executor` / `packages/database` suites (lease recovery, worker loss, retry, backoff,
-DLQ, fairness, priority, Docker execution) remain green.
-
-## 11. Quality Gates
-
-Run in the worktree. Postgres + Redis on `127.0.0.1` (WSL2), Docker over TCP
-`tcp://172.31.91.254:2375`. `docker compose` not used (Docker Desktop npipe is down); the
-integration tests connect to the running services directly.
-
-| Gate             | Command                    | Result                                                              |
-| ---------------- | -------------------------- | ------------------------------------------------------------------- |
-| Format           | `npm run format:check`     | **PASS** (green after the pre-gate `.prettierignore` change — §12)  |
-| Lint             | `npm run lint`             | **PASS** (`eslint .`, exit 0; `no-explicit-any: error` clean)       |
-| Typecheck        | `npm run typecheck`        | **PASS** (`tsc -b`, exit 0)                                         |
-| Test             | `npm test`                 | **PASS** — 64 files / 645 tests, 0 failures                         |
-| Build            | `npm run build`            | **PASS** (all 15 workspaces incl. `@forge/outbox` and `next build`) |
-| Outbox benchmark | `npm run benchmark:outbox` | **PASS** (exit 0; report regenerated — numbers in §8)               |
-
-No test failures, no skips, no `.only`. No pre-existing failures encountered.
-
-## 12. Changed Files
-
-`git diff --stat 42cdf33..HEAD` (63 files, +10 246 / −415; the two large docs are the SDD
-spec + plan):
-
-```text
- .env.example                                       |   22 +
- .prettierignore                                    |    9 +
- README.md                                          |   14 +-
- apps/scheduler/package.json                        |    1 +
- apps/scheduler/src/index.ts                        |   42 +-
- apps/scheduler/src/scheduler.integration.test.ts   |  136 +-
- apps/scheduler/src/scheduler.test.ts               |  154 +-
- apps/scheduler/src/scheduler.ts                    |  255 +-
- apps/scheduler/tsconfig.json                       |    4 +-
- apps/worker/src/index.test.ts                      |  209 +-
- apps/worker/src/index.ts                           |  300 +-
- apps/worker/src/worker-execution.integration.test.ts |  376 +-
- benchmarks/outbox/config.ts                        |   47 +
- benchmarks/outbox/explain.ts                       |  138 +
- benchmarks/outbox/runner.ts                        |  252 ++
- benchmarks/outbox/suites/overhead.bench.ts         |   87 +
- benchmarks/outbox/suites/throughput.bench.ts       |  173 +
- benchmarks/outbox/utils/fixtures.ts                |  147 +
- benchmarks/reports/outbox-benchmark-report.json    |  301 ++
- docs/architecture/events.md                        |  245 +-
- docs/architecture/invariants.md                    |   13 +-
- docs/architecture/overview.md                      |    5 +-
- docs/superpowers/plans/2026-09-08-pr21-outbox.md   | 3934 ++++++++++
- docs/superpowers/specs/2026-09-08-pr21-outbox-design.md |  829 +++
- package-lock.json                                  |   18 +
- package.json                                       |    3 +-
- packages/config/src/index.test.ts                  |   76 +
- packages/config/src/index.ts                       |  132 +
- packages/contracts/src/index.ts                    |  145 +
- packages/database/src/errors.ts                    |   12 +
- packages/database/src/index.ts                     |   20 +-
- packages/database/src/lease-recovery-service.ts    |   43 +-
- packages/database/src/migrations/migrator.test.ts  |   42 +-
- packages/database/src/migrations/migrator.ts       |   40 +
- packages/database/src/migrations/sql/008_outbox_events.sql |   34 +
- packages/database/src/outbox-transaction.integration.test.ts |  126 +
- packages/database/src/repositories/contracts/outbox-repository.contract.ts |  103 +
- packages/database/src/repositories/contracts/worker-lease-repository.contract.ts |    4 +
- packages/database/src/repositories/lease-recovery.integration.test.ts |  125 +-
- packages/database/src/repositories/pg-outbox-repository.integration.test.ts |  368 ++
- packages/database/src/repositories/pg-outbox-repository.ts |  318 ++
- packages/database/src/repositories/pg-worker-lease-repository.integration.test.ts |  168 +
- packages/database/src/repositories/pg-worker-lease-repository.ts |   23 +
- packages/database/src/transaction.ts               |    9 +
- packages/database/src/types.ts                     |   27 +
- packages/events/src/index.ts                       |    1 +
- packages/events/src/outbox-input.test.ts           |   51 +
- packages/events/src/outbox-input.ts                |   29 +
- packages/outbox/package.json                       |   26 +
- packages/outbox/src/at-least-once.experiment.test.ts |   94 +
- packages/outbox/src/backoff.test.ts                |   22 +
- packages/outbox/src/backoff.ts                     |   14 +
- packages/outbox/src/dispatcher-concurrency.integration.test.ts |   91 +
- packages/outbox/src/dispatcher.test.ts             |  138 +
- packages/outbox/src/dispatcher.ts                  |  246 ++
- packages/outbox/src/errors.ts                      |   13 +
- packages/outbox/src/index.ts                       |   11 +
- packages/outbox/src/publisher-failure.test.ts      |   31 +
- packages/outbox/src/retention.integration.test.ts  |  139 +
- packages/outbox/src/slow-publisher-fencing.race.test.ts |   85 +
- packages/outbox/src/test-support.ts                |  126 +
- packages/outbox/tsconfig.json                      |   14 +
- tsconfig.json                                      |    1 +
-```
-
-## 13. Dependencies
-
-- **No new external npm dependency.** `@forge/outbox` reuses `pg` (via `@forge/database`) and
-  the existing `@forge/*` packages; `package-lock.json` changes are only the new workspace link.
-- **New workspace package `@forge/outbox`** — deps: `@forge/contracts`, `@forge/database`,
-  `@forge/events`, `@forge/logging`. It imports **no** `@forge/config` and **no** `apps/*`, so
-  it can move to its own process later.
-- **`apps/scheduler` gains `@forge/outbox`** (`package.json` + `tsconfig.json` project ref) for
-  the dispatcher wiring in `src/index.ts`, and a `@forge/database` project ref because
-  `index.ts` now value-imports `PgOutboxRepository`.
-- `@forge/database` still imports **no** `@forge/events` (a comment in
-  `pg-outbox-repository.ts` records the constraint; enqueue validation is structural only).
-- `@forge/contracts` stays zero-runtime-dep — the new `OutboxStatus` / `OutboxEnqueueInput` /
-  `OutboxEventRecord` / `DEFAULT_OUTBOX_*` symbols are `type` / `interface` / `const number`,
-  and `BatchClaimOptions.pendingOutbox?` is a function type in type position only.
-- New root script `benchmark:outbox`; new root `tsconfig.json` project ref
-  `packages/outbox`.
-
-## 14. Architecture Impact
-
-**Before (PR 20):**
-
-```text
-apps/worker  ── withTransaction ─► jobs + job_attempts   (COMMIT)
-                                       └─ then safePublish(JobStarted / terminal / JobQueued)   ← lost if transport down
-apps/scheduler ─ claimBatch ─────► worker_leases          (COMMIT)
-                                       └─ then safePublish(JobClaimed)                          ← lost if transport down
-apps/scheduler ─ recovery ───────► jobs + dead_letter_jobs (COMMIT)
-                                       └─ then safePublish(WorkerLost)                          ← lost if transport down
-```
-
-**After (PR 21):**
-
-```text
-apps/worker    ── withTransaction ─┐
-                                   ├─►  jobs + job_attempts + outbox_events          (ONE commit)
-apps/scheduler ─ claimBatch ───────┤     worker_leases      + outbox_events          (ONE commit)
-apps/scheduler ─ recovery ─────────┘     jobs + dead_letter_jobs + outbox_events     (ONE commit)
-                                              │
-                                              ▼
-                                  OutboxDispatcher (@forge/outbox, hosted in apps/scheduler)
-                                  poll → claimBatch (fresh claim_token, FOR UPDATE SKIP LOCKED)
-                                       → parseForgeEvent(payload)
-                                       → publish(event)  [bounded publishTimeoutMs]
-                                       → fenced markPublished / markRetry / → DEAD
-                                       → every N ticks: deletePublishedBefore (retention)
-                                              │  at least once
-                                              ▼
-                                  EventPublisher (InProcessEventBus today)  →  consumers dedupe on event_id
-```
-
-`JobLogChunk`, `WorkerHeartbeat`, and `WorkerRegistered` stay on the direct best-effort
-`safePublish` path and are **not** in the outbox.
-
-## 15. Known Limitations
-
-a. **Claim query Seq-Scans.** The `PENDING OR CLAIMED` disjunction in the `claimBatch` WHERE
-leaves the `idx_outbox_events_claimable` partial index unused (§9) — `Seq Scan` +
-`quicksort`, `O(table)`. Fine at current scale (2.3 ms / 5000 rows); the follow-up is a
-`UNION ALL` rewrite (one arm per status, each index-eligible), gated on re-running the
-fencing and ordering tests (T6 / T13) since it changes the claim SQL.
-b. **Recovery-only scheduler `WorkerLost` gating — fixed in final review (`79d48bb`).** The
-recovery mapper was originally gated on `outboxEnabled` (which requires `claimBatch`), so a
-scheduler configured with `{ recoveryService, eventPublisher }` but no `leaseRepository` would
-emit no `WorkerLost` at all. Now gated on a separate `recoveryOutboxEnabled` getter
-(`Boolean(this.eventPublisher)`), with a `scheduler.integration.test.ts` case for the
-no-`leaseRepository` recovery path. `JobClaimed` still uses `outboxEnabled`.
-c. **`CLAUDE.md` was updated in the main working tree only.** It is git-untracked in this repo,
-so the migrations `001`–`008` / `packages/outbox` / `tx.outbox` / `benchmark:outbox` / status
-edits made to it are **not** in this branch's diff.
-d. **`JobLogChunk` / `WorkerHeartbeat` / `WorkerRegistered` remain best-effort.** They may be
-lost on publisher failure or crash, and — for the same job — may arrive _after_ the durable
-terminal event, because the durable path is delayed by ≥ one poll interval while
-`JobLogChunk` publishes immediately (see `events.md` §18.4 and invariant §14.8).
-e. **`DEAD` outbox rows accumulate.** No auto-cleanup in PR 21; retention never touches them.
-Manual triage; a bounded `DEAD`-retention job is future work.
-f. **Residual duplicate window.** If the external `publish` succeeds and then `markPublished`
-fails (or the dispatcher dies before it), the next dispatcher reclaims and re-publishes the
-same `event_id`. This is the at-least-once contract, not a defect — consumers must dedupe.
-g. **`OutboxDispatcher` is hosted inside `apps/scheduler`**, not its own process. The package
-carries zero `apps/*` imports so relocation is wiring-only, but today a scheduler must be
-running to drain the outbox.
-h. **No `LISTEN` / `NOTIFY` wake-up.** The dispatcher polls at `pollIntervalMs`; there is no
-push notification when a row is enqueued. Polling is the only correctness path (explicitly
-in scope per spec §18); latency is bounded below by one poll interval.
-i. **Worker `pool`-required guard is narrow.** `executeJob` throws only for the
-`jobRepository` + `eventPublisher` + no-`pool` combination. A worker configured with an
-`eventPublisher` and _no_ persistence at all is not caught and silently emits no lifecycle
-events. The final-review fix wave widened the guard to `!pool && eventPublisher`, but that
-forced-rewrote six PR-20 pool-less lifecycle-event unit tests into throw-assertions and
-dropped the sole regression test for `safePublish` swallowing a rejecting best-effort
-publisher (invariant §14.3, a live path via the pool-backed `JobLogChunk` loop); it was
-reverted (`9e122c7`). Follow-up: widen the guard **and** re-home those six tests onto a
-pool-backed worker (assert the durable rows) plus add a `packages/events` `safePublish` unit
-test for the rejecting-publisher-is-swallowed-and-logged contract.
-
-## 16. Merge Recommendation
-
-READY TO MERGE
+**T3 (high risk).** Cross-process distributed transport, WebSocket connection lifecycle, a
+new authN/authZ boundary, concurrency + backpressure, Redis-failure recovery, multi-instance
+fan-out, and latency measurement. No auto-escalation was needed — started at T3.
 
 ---
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+## 2. Repository Inspection (findings that shaped the design)
+
+All `[VERIFIED]` against the `feat/pr-21-outbox` tree:
+
+- **Branch discrepancy.** The session launched on `feat/pr-19-execution-engine`, which has
+  **no `packages/events` and no `packages/outbox`**. PR 20 and PR 21 live only on
+  `feat/pr-21-outbox` (checked out in `.claude/worktrees/pr-21-outbox`); `main` is still at
+  the PR 16 merge. Reported to the user; PR 22 was branched from `feat/pr-21-outbox` into a
+  new worktree.
+- **`@forge/events` (PR 20).** `EventPublisher` / `EventSubscriber` are a transport-neutral
+  seam; `InProcessEventBus` is the only implementation. `parseForgeEvent` (zod) strips
+  unknown fields, rejects a wrong `version`. §14.8 fixes the ordering caveat: a terminal
+  event may precede `JobLogChunk` for the same job.
+- **`@forge/outbox` (PR 21).** `OutboxDispatcher` takes an injected `EventPublisher`,
+  wraps `publisher.publish` in a bounded timeout, and on failure calls `markRetry` — the
+  row stays `PENDING`. Wired in `apps/scheduler/src/index.ts` `startScheduler({ pool,
+publisher })`, but **no caller ever passes a real cross-process publisher**.
+- **`@forge/redis` has NO Pub/Sub** — only KV + coordination primitives + `getRawClient()`.
+  `ioredis` (already a dependency) supports Pub/Sub natively — zero new transport
+  dependency.
+- **No authentication, session, user, project, or resource-authorization model anywhere.**
+  `apps/api` is `GET /health` + a 404 handler. `@forge/contracts` has zero auth/session
+  types. There is no pipelines/runs/jobs REST surface to resolve a resource against.
+- **No WebSocket / SSE / realtime code.** `ws` and `@types/ws` are not installed; Node has
+  no built-in WebSocket **server**.
+- `docs/architecture/events.md` §15 and `invariants.md` §14.10 explicitly anticipate this
+  PR and forbid partial implementation before it.
+
+### User-approved decisions (the repo did not determine these)
+
+1. **Base / location** — new worktree branched from `feat/pr-21-outbox`.
+2. **Auth scope** — the smallest explicit bridge (shared-secret handshake, one opaque
+   principal) + a pluggable `SubscriptionAuthorizer` seam with a documented placeholder
+   implementation. Real per-resource authorization is deferred to the PR that builds the
+   resource API.
+3. **Gateway hosting** — a dedicated `apps/realtime-gateway` service (no DB access), not
+   mounted on `apps/api`.
+
+Near-forced: a WebSocket **server** needs a library — `ws` (itself dependency-free) added
+to the gateway package only. `tsx` added as a **devDependency** so all three
+`benchmark:*` scripts run offline.
+
+---
+
+## 3. Execution Strategy
+
+| Metric              | Value                                                                                                                                                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Workstreams         | 3 (WS-A transport, WS-B gateway, WS-C benchmark+docs) — mostly serial                                                                                                                                                                                                                |
+| Subagents           | 1 (final independent verifier, §50)                                                                                                                                                                                                                                                  |
+| Review cadence      | at each workstream boundary, applicable profiles only (architecture, security, concurrency, correctness, performance)                                                                                                                                                                |
+| Testing cadence     | focused per workstream; full `npm test` once at the end                                                                                                                                                                                                                              |
+| Direct vs delegated | all implementation direct in the main session; delegation only for independent verification                                                                                                                                                                                          |
+| Rework rounds       | 1 significant — the live slow-consumer experiment (loopback TCP has no usable write backpressure below tens of MB and Redis Pub/Sub caps a slow subscriber at 32 MB); replaced with a deterministic real-gateway test driven by an in-process transport + the fake-socket unit proof |
+
+Why this shape: the dependency topology is transport → publisher → gateway → integration,
+almost entirely serial. Splitting it across parallel subagents would have added
+context-rehydration cost and merge risk for no wall-clock gain. Direct execution with a
+fresh independent verifier at the end was the smallest orchestration that preserved the
+required rigor.
+
+---
+
+## 4. Final Architecture
+
+```text
+                     PostgreSQL
+                  ┌──────────────┐
+                  │ jobs / leases│  authoritative, durable
+                  │ outbox_events│
+                  └──────┬───────┘
+                         │  one transaction (PR 21)
+                         ▼
+                 OutboxDispatcher            (apps/scheduler-hosted)
+                         │  EventPublisher.publish(event)
+                         ▼
+                 RedisEventPublisher          @forge/realtime — implements EventPublisher
+                         │
+                         ▼
+                 Redis Pub/Sub               single channel  forge:realtime:events   (transient)
+                         │
+              ┌──────────┴──────────┐
+              ▼                     ▼
+       RedisEventSubscriber   RedisEventSubscriber      @forge/realtime — implements EventSubscriber
+              │                     │
+       RealtimeGateway A     RealtimeGateway B          apps/realtime-gateway (no DB access)
+              │                     │
+              ▼                     ▼
+          WebSocket clients     WebSocket clients        (transient; best-effort)
+```
+
+`JobLogChunk` takes the same path but is best-effort end-to-end (`safePublish` on the
+worker side — not in the durable outbox, per PR 21 §18.3).
+
+---
+
+## 5. Transport Semantics
+
+| Segment                                           | Class                                                                                                            |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL state + `outbox_events` row (one tx)   | **Durable.** Unaffected by Redis/WebSocket availability.                                                         |
+| `OutboxDispatcher → RedisEventPublisher → Redis`  | **At-least-once** for durable lifecycle events. Redis down ⇒ publish throws ⇒ `markRetry` ⇒ row stays `PENDING`. |
+| `Redis → RedisEventSubscriber → Gateway → client` | **Best-effort.** Disconnected client misses events; slow client is disconnected; no replay.                      |
+| `JobLogChunk` end-to-end                          | **Best-effort** the whole way.                                                                                   |
+
+No exactly-once WebSocket delivery. No global/cross-producer ordering (§14.8 holds — a
+client may observe `JobSucceeded`/`JobFailed` before some/all `JobLogChunk` for that job).
+Duplicate `event_id` delivery is possible; a future client dedupes on `event_id`.
+
+---
+
+## 6. WebSocket Protocol (v1)
+
+- **Connection**: HTTP upgrade → origin allowlist → shared-secret auth → instance capacity
+  → `ws.handleUpgrade` → server sends `{ "type": "ready", "v": 1, "connection_id": …,
+"heartbeat_interval_ms": …, "limits": {…} }`.
+- **Client → server**: `subscribe` / `unsubscribe` / `ping`, each
+  `{ type, v: 1, target?: { kind: "pipeline"|"run"|"job", id } }`.
+- **Server → client**: `ready`, `subscribed`, `unsubscribed`, `event` (the full PR 20
+  envelope, unmodified), `pong`, `closing`, `error`.
+- **Error codes**: `INVALID_MESSAGE`, `UNSUPPORTED_VERSION`, `UNAUTHORIZED`, `FORBIDDEN`,
+  `INVALID_SUBSCRIPTION`, `SUBSCRIPTION_LIMIT`, `RATE_LIMITED`, `MESSAGE_TOO_LARGE`,
+  `SERVER_SHUTTING_DOWN`, `SLOW_CONSUMER`. A malformed frame is answered with `error` and
+  the connection stays open.
+- **Shutdown**: stop accepting → stop Redis fan-out → send `closing` → close sockets →
+  bounded wait (`shutdownGraceMs`) → terminate stragglers → close HTTP server. Idempotent.
+
+Redis details are never exposed; a client cannot name a channel (the `subscribe` schema
+has no channel field and strips unknown keys).
+
+---
+
+## 7. Security
+
+- **Origin** (`origin.ts`): validated against `WEBSOCKET_ORIGIN_ALLOWLIST` (CSV). Empty
+  allowlist rejects every browser `Origin`; `*` is never accepted; a request with no
+  `Origin` (non-browser) is allowed but still needs the token; opaque `"null"` is rejected.
+- **Authentication** (`auth.ts`): `WEBSOCKET_AUTH_TOKEN` presented as `Authorization:
+Bearer <token>` **or** the `forge.v1.token.<token>` subprotocol — never the URL query
+  string; compared with `crypto.timingSafeEqual` (length-guarded). The gateway **refuses to
+  start** with an empty token (`gatewayConfigFromAppConfig` throws). It yields **one opaque
+  principal** — this is a bridge over Forge's absent session model, documented as a
+  limitation, not per-user identity.
+- **Authorization** (`authorization.ts`): every `subscribe` runs through
+  `SubscriptionAuthorizer.authorize(principal, target)`; a `false` result or a throw yields
+  `FORBIDDEN` and the subscription is refused. The shipped `AllowAuthenticatedAuthorizer` is
+  a **documented placeholder** — Forge has no resource-ownership model — allowing any
+  authenticated principal any well-formed target. Replacing it is a one-line wiring change.
+- **Bounds**: `WEBSOCKET_MAX_CONNECTIONS` (per instance), `WEBSOCKET_MAX_SUBSCRIPTIONS_PER_CONNECTION`,
+  `WEBSOCKET_MAX_PENDING_MESSAGES` (outbound queue), `WEBSOCKET_MAX_MESSAGE_BYTES` (inbound,
+  via `ws` `maxPayload`). No secret / token / cookie / full sensitive payload is logged.
+
+---
+
+## 8. Backpressure
+
+Each connection owns a bounded outbound queue counted in `GatewayConnection.send` (pending
+incremented before the write, decremented in its completion callback). At the bound the
+connection is closed with `SLOW_CONSUMER` and **fully released** (`registry.remove` +
+metric). Each connection owns its own counter and socket, so one slow client never stalls
+another.
+
+**Evidence** — `connection.test.ts` (fake socket, deterministic): queue never exceeds the
+cap, `disconnectSlowConsumer` fires on the over-cap send, `onClose` runs exactly once, sends
+after close are inert. `slow-consumer.experiment.test.ts` (real gateway + real `ws` server +
+real `ws` client, in-process transport for deterministic burst timing): a paused client is
+dropped for backpressure with `activeConnections`/`activeSubscriptions` back to 0, a healthy
+client on the same stream receives the entire 400-event feed, and the dropped client
+reconnects and resubscribes.
+
+---
+
+## 9. Redis Failure Model
+
+- **Startup outage**: `apps/realtime-gateway/src/index.ts` logs
+  `realtime.redis_connect_failed_degraded_start` and **keeps serving WebSocket handshakes**;
+  `ioredis` retries and auto-resubscribes on recovery. No events flow until Redis is back.
+  PostgreSQL and `outbox_events` are untouched; no false terminal events.
+- **Runtime drop** (`gateway-lifecycle.integration.test.ts`): existing connections stay
+  open and answer `ping`; the gateway does not crash; `stop()` still completes bounded.
+- **Recovery**: `ioredis` re-establishes the subscription automatically. Missed events are
+  **not** replayed — durable recovery is the PostgreSQL outbox, not Pub/Sub.
+
+---
+
+## 10. Multi-Gateway
+
+`multi-gateway.integration.test.ts` (live Redis): two gateway instances on one channel;
+one publish reaches clients on both; a client on gateway B is unaffected when gateway A
+stops. Each instance holds only its own connection/subscription state (an inverted
+key → connection-ids index for fan-out). No sticky sessions.
+
+---
+
+## 11. Reconnect
+
+`connect → authenticate → ready → subscribe → live events`. On reconnect the client
+re-authenticates, re-subscribes, and refreshes authoritative state **through the API**.
+Reconnect does not recover events missed during the gap.
+
+---
+
+## 12. Ordering
+
+Unchanged from §14.8: no global or cross-producer ordering; a client may see a terminal
+`JobSucceeded`/`JobFailed`/`JobCancelled` before some or all `JobLogChunk` for that job. No
+client-side ordering guarantee is introduced.
+
+---
+
+## 13. Benchmarks
+
+`npm run benchmark:websocket` → `benchmarks/reports/websocket-benchmark-report.json`.
+Real gateway + real `ws` clients + real `RedisEventPublisher` → Redis path; measures
+`publish()` → first-client-receipt and → full-fan-out. Machine: Intel i7-14650HX, Node
+v25, Redis on WSL, loopback.
+
+| Phase     | Fan-out | Events | Bytes | first p50 (ms) | first p95 | first p99 | full p95 | evt/s |
+| --------- | ------- | ------ | ----- | -------------- | --------- | --------- | -------- | ----- |
+| lifecycle | 1       | 200    | 334   | 0.56           | 0.78      | 1.05      | 0.79     | 1690  |
+| lifecycle | 10      | 200    | 334   | 0.67           | 0.87      | 0.98      | 1.03     | 1219  |
+| lifecycle | 50      | 200    | 334   | 1.53           | 2.13      | 2.61      | 2.99     | 474   |
+| lifecycle | 100     | 200    | 334   | 2.15           | 2.90      | 4.76      | 4.15     | 314   |
+| logchunk  | 1       | 100    | 65536 | 44.1           | 55.8      | 67.2      | 55.8     | 21.8  |
+| logchunk  | 10      | 100    | 65536 | 47.5           | 62.2      | 68.7      | 69.5     | 18.6  |
+| logchunk  | 50      | 100    | 65536 | 61.4           | 69.0      | 87.2      | 90.6     | 13.3  |
+| logchunk  | 100     | 100    | 65536 | 78.4           | 92.3      | 106.4     | 132.5    | 9.9   |
+
+**Interpretation (honest).** Small lifecycle events deliver in ~0.5–5 ms p50–p99 across
+fan-out 1→100. A bounded 64 KiB `JobLogChunk` is ~50–100× slower (p50 44→78 ms) and its
+cost is dominated by JSON serialize + Redis + per-client fan-out of the large payload, and
+it grows with fan-out. This is a real characteristic to be aware of when streaming logs to
+many viewers; it is not a bottleneck introduced by, or fixable within, PR 22. No
+sub-second / high-throughput / production-scale claim is made.
+
+---
+
+## 14. Failure Experiments (observed)
+
+| Experiment           | Result                                                                                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Redis startup outage | Gateway starts degraded, serves handshakes; no state impact. (`index.ts` degraded-start path; asserted indirectly.)                                     |
+| Redis runtime drop   | Connection survives, `ping`→`pong` still works, no crash, bounded `stop()`. (`gateway-lifecycle.integration.test.ts`)                                   |
+| Redis recovery       | ioredis auto-resubscribes (library behaviour; `pubsub` adapter surfaces the transition via `onConnectionChange` + logs).                                |
+| Gateway restart      | Client reconnects to a fresh instance on the same channel; events flow. Gateway holds no authoritative state. (`gateway-lifecycle.integration.test.ts`) |
+| Client reconnect     | Re-auth + resubscribe + live events. (`slow-consumer.experiment.test.ts`, `gateway-lifecycle.integration.test.ts`)                                      |
+| Slow consumer        | Dropped for backpressure; bounded footprint; healthy client unaffected; reconnect works. (`connection.test.ts` + `slow-consumer.experiment.test.ts`)    |
+| Multi-gateway        | One publish → clients on A and B; B unaffected by A stopping. (`multi-gateway.integration.test.ts`)                                                     |
+
+---
+
+## 15. Tests
+
+**Full suite: `npm test` → 736 passed / 736, 81 files, exit 0** (Redis + Postgres + Docker
+all reachable on this machine).
+
+PR 22 adds ~90 tests:
+
+| Area                                                                                              | Tests | Infra                              |
+| ------------------------------------------------------------------------------------------------- | ----- | ---------------------------------- |
+| `packages/realtime` unit (serialization, publisher, subscriber, timeout)                          | 19    | mocked pubsub                      |
+| `packages/realtime` `realtime.integration.test.ts`                                                | 2     | live Redis                         |
+| `packages/redis` `pubsub.integration.test.ts`                                                     | 6     | live Redis                         |
+| `packages/config` realtime/websocket config                                                       | +7    | none                               |
+| `apps/realtime-gateway` unit (protocol, origin, auth, subscription, connection, registry, config) | 40    | none                               |
+| `apps/realtime-gateway` `gateway.integration.test.ts`                                             | 5     | live Redis + ws client             |
+| `apps/realtime-gateway` `gateway-security.integration.test.ts`                                    | 10    | live Redis                         |
+| `apps/realtime-gateway` `multi-gateway.integration.test.ts`                                       | 2     | live Redis, 2 gateways             |
+| `apps/realtime-gateway` `gateway-lifecycle.integration.test.ts`                                   | 3     | live Redis                         |
+| `apps/realtime-gateway` `slow-consumer.experiment.test.ts`                                        | 2     | real gateway, in-process transport |
+
+No mocked test stands in for a cross-process claim: transport + fan-out + multi-gateway all
+run against live Redis; only the deterministic slow-consumer burst uses an in-process
+transport (with the Redis path proven separately).
+
+---
+
+## 16. Quality Gates
+
+| Command                       | Result                                                 |
+| ----------------------------- | ------------------------------------------------------ |
+| `npm run format:check`        | PASS — all files use Prettier style                    |
+| `npm run lint`                | PASS — `eslint .` exit 0                               |
+| `npm run typecheck`           | PASS — `tsc -b` exit 0                                 |
+| `npm test`                    | PASS — 736/736, exit 0                                 |
+| `npm run build`               | PASS — all workspaces (`tsc -b` + `next build`) exit 0 |
+| `npm run benchmark:websocket` | PASS — runs green, report written                      |
+
+---
+
+## 17. Changed Files (66 files, +5202 / −12)
+
+**New packages / services**
+
+- `packages/realtime/` — `package.json`, `tsconfig.json`, `src/{index,errors,serialization,redis-event-publisher,redis-event-subscriber,test-support}.ts` + 4 test files
+- `apps/realtime-gateway/` — `package.json`, `tsconfig.json`, `src/{index,protocol,subscription,origin,auth,authorization,metrics,config,connection,registry,gateway,test-support,integration-support}.ts` + 12 test files
+- `benchmarks/websocket/{config,runner}.ts`, `benchmarks/reports/websocket-benchmark-report.json`
+
+**Modified**
+
+- `packages/redis/src/{index.ts,pubsub.ts (new),pubsub.integration.test.ts (new)}`
+- `packages/contracts/src/index.ts` — `AppConfig` +11 fields, `FORGE_REALTIME_EVENT_CHANNEL`, `REALTIME_PROTOCOL_VERSION`, `DEFAULT_*` constants
+- `packages/config/src/{index.ts,index.test.ts}` — 11 new defaulted vars + coverage
+- `apps/scheduler/src/index.ts` (+`package.json`,`tsconfig.json`,`index.test.ts`) — guarded lazy `RedisEventPublisher` into `OutboxDispatcher`
+- `apps/worker/src/index.ts` (+`package.json`,`tsconfig.json`) — directly-run entrypoint routes best-effort events onto the transport, guarded
+- root `tsconfig.json`, `package.json` (`benchmark:websocket`, `tsx` devDep), `.env.example`, `.prettierignore` (`.task/`)
+- `docs/architecture/{events.md,invariants.md,overview.md}`, `README.md`, `.task/`, this file
+
+No change to `packages/events`, `packages/outbox`, `packages/database`, executor, or any
+scheduling/execution logic beyond transport wiring.
+
+---
+
+## 18. Dependency Changes
+
+- **`ws` `^8.18.0`** + **`@types/ws` `^8.5.13`** — runtime, `apps/realtime-gateway` only.
+  `ws` has zero runtime dependencies. A WebSocket server has no standard-library
+  alternative in Node.
+- **`tsx` `^4.23.13`** — root **devDependency**. All three `benchmark:*` scripts already
+  assumed `npx tsx`; pinning it makes them run offline.
+- No new dependency for the Redis transport — `ioredis` (already in `@forge/redis`)
+  provides Pub/Sub.
+
+---
+
+## 19. Architecture Impact (before → after)
+
+|                                   | Before (PR 21)                      | After (PR 22)                                                 |
+| --------------------------------- | ----------------------------------- | ------------------------------------------------------------- |
+| `EventPublisher` implementations  | `InProcessEventBus` only            | `+ RedisEventPublisher` (cross-process)                       |
+| `EventSubscriber` implementations | `InProcessEventBus` only            | `+ RedisEventSubscriber`                                      |
+| Redis capabilities                | KV + coordination                   | `+ Pub/Sub adapter`                                           |
+| Services                          | api, scheduler, worker, cli, web    | `+ realtime-gateway`                                          |
+| Cross-process event delivery      | none                                | Redis Pub/Sub, best-effort                                    |
+| Client-facing realtime            | none                                | authenticated WebSocket, bounded, best-effort                 |
+| Autonomous loops                  | scheduler-hosted `OutboxDispatcher` | `+ realtime-gateway` process (heartbeat + Redis subscription) |
+
+Unchanged: PostgreSQL is the sole source of truth; the durable outbox is the only durable
+event buffer; `apps/*` → `packages/*` dependency direction; no circular package
+dependencies.
+
+---
+
+## 20. Known Limitations
+
+- **Redis Pub/Sub is transient** — a message published while a gateway is disconnected is
+  gone.
+- **Disconnected clients miss events**; there is **no durable WebSocket history** and **no
+  replay** in PR 22. A future history/replay service may provide that.
+- **No global ordering** and **no exactly-once WebSocket delivery** — a client may receive a
+  duplicate `event_id`.
+- **`JobLogChunk` realtime delivery is best-effort end-to-end** and remains separate from
+  any persistent log store.
+- **Authentication is a shared-secret bridge** yielding one opaque principal — not per-user
+  identity. **Authorization is a placeholder** (`AllowAuthenticatedAuthorizer`): any
+  authenticated principal may subscribe to any run/job/pipeline id, because Forge has no
+  resource-ownership model yet. Both are documented seams to replace when the resource API
+  lands.
+- **64 KiB `JobLogChunk` fan-out latency is ~50–130 ms p95** on the benchmark host and
+  scales with fan-out — acceptable for log tailing, not "sub-second at scale".
+- Loopback TCP on the test machine has no usable write backpressure below tens of MB and
+  Redis Pub/Sub caps a slow subscriber at 32 MB, so the _live_ slow-consumer trigger cannot
+  be reproduced with a paused socket; the deterministic proof is the fake-socket unit test
+  plus a real-gateway test with an in-process transport.
+- The worker's realtime wiring is in its `isDirectRun` entrypoint only; the worker still has
+  no queue-polling claim→execute loop (pre-existing).
+
+---
+
+## 21. Efficiency Metrics vs. PR 21 baseline
+
+`OBSERVED`: PR 22 used **1 subagent** (final verification) vs. PR 21's heavier
+multi-round process; **3 workstream commits** vs. PR 21's 26; **1 rework round** (the
+slow-consumer experiment). `UNKNOWN`: wall-clock and tool-call totals were not
+instrumented against PR 21. `PROJECTED` savings are not claimed as measured.
+
+---
+
+## 22. Independent Verification
+
+A separate verification pass (fresh context) re-checked, from the code and by re-running
+the gates: architecture/dependency boundaries, security (origin, auth, authz seam, bounds,
+no-secret-logging), transport semantics (envelope integrity, Redis-down rethrow,
+no-replay/no-exactly-once wording), the `REALTIME_PUBLISH_ENABLED` default-off gate, and
+diff hygiene, plus `tsc -b` / `eslint .` / `prettier --check .` / `vitest` /
+`npm run build` / the benchmark report. Result recorded in the session.
+
+---
+
+## 23. Merge Recommendation
+
+**READY TO MERGE** — onto `feat/pr-21-outbox` (which must merge first; `main` is still at
+PR 16).
