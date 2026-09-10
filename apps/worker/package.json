@@ -17,6 +17,8 @@
     "@forge/executor": "*",
     "@forge/logging": "*",
     "@forge/pipeline": "*",
+    "@forge/realtime": "*",
+    "@forge/redis": "*",
     "@forge/worker-registry": "*"
   }
 }

@@ -28,6 +28,8 @@ import {
 } from '@forge/events';
 import { DockerExecutor } from '@forge/executor';
 import { createLogger, type Logger } from '@forge/logging';
+import { RedisEventPublisher } from '@forge/realtime';
+import { createRedisPubSub, type RedisPubSub } from '@forge/redis';
 import { evaluateRetry, type Job, type JobAttempt } from '@forge/pipeline';
 import {
   type WorkerRegistry,
@@ -809,11 +811,40 @@ const isDirectRun =
     normalizedArgv1.endsWith('worker/src/index.ts'));
 
 if (isDirectRun) {
-  const shell = startWorker();
+  // PR 22: when REALTIME_PUBLISH_ENABLED=true, route this worker's best-effort lifecycle
+  // events — notably the derived `JobLogChunk` stream — onto the Redis realtime transport
+  // by handing `startWorker` a RedisEventPublisher. The seam is unchanged; only the
+  // transport implementation behind `eventPublisher` differs. Redis is transient: a
+  // publish failure is logged by `safePublish` and never disrupts execution.
+  const bootConfig = loadConfig();
+  let realtimePubSub: RedisPubSub | undefined;
+  let eventPublisher: EventPublisher | undefined;
+  if (bootConfig.realtimePublishEnabled) {
+    const bootLogger = createLogger({
+      service: 'worker',
+      environment: bootConfig.nodeEnv,
+      minLevel: bootConfig.logLevel,
+    });
+    realtimePubSub = createRedisPubSub({ url: bootConfig.redisUrl }, bootLogger);
+    void realtimePubSub.connect().catch((err: unknown) => {
+      bootLogger.error('realtime.redis_connect_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    eventPublisher = new RedisEventPublisher({
+      pubsub: realtimePubSub,
+      channel: bootConfig.realtimeRedisChannel,
+      publishTimeoutMs: bootConfig.realtimePublishTimeoutMs,
+      logger: bootLogger,
+    });
+  }
+
+  const shell = startWorker(eventPublisher ? { eventPublisher } : undefined);
 
   const shutdown = async (signal: string) => {
     console.info(`[forge-worker] Received ${signal}, initiating graceful drain and shutdown`);
     await shell.stop({ drain: true });
+    await realtimePubSub?.close();
     process.exit(0);
   };
 

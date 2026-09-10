@@ -9,12 +9,8 @@
     { "path": "../../packages/config" },
     { "path": "../../packages/logging" },
     { "path": "../../packages/events" },
-    { "path": "../../packages/database" },
-    { "path": "../../packages/executor" },
-    { "path": "../../packages/pipeline" },
     { "path": "../../packages/realtime" },
-    { "path": "../../packages/redis" },
-    { "path": "../../packages/worker-registry" }
+    { "path": "../../packages/redis" }
   ],
   "include": ["src/**/*"]
 }

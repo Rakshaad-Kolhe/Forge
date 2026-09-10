@@ -1,25 +1,26 @@
 {
-  "name": "@forge/scheduler",
+  "name": "@forge/realtime",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
     "clean": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\""
   },
   "dependencies": {
-    "@forge/config": "*",
     "@forge/contracts": "*",
-    "@forge/database": "*",
     "@forge/events": "*",
     "@forge/logging": "*",
-    "@forge/outbox": "*",
-    "@forge/pipeline": "*",
-    "@forge/queue": "*",
-    "@forge/realtime": "*",
-    "@forge/redis": "*",
-    "@forge/worker-registry": "*"
+    "@forge/redis": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4"
   }
 }
