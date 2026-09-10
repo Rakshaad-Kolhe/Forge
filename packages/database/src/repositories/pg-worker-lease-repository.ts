@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  BatchClaimItem,
   BatchClaimItemResult,
   BatchClaimOptions,
   BatchClaimResult,
   ClaimJobOptions,
   ClaimJobResult,
   JobLeaseStatus,
+  OutboxEnqueueInput,
   ReleaseLeaseOptions,
   ReleaseLeaseResult,
   RenewLeaseOptions,
@@ -14,6 +16,7 @@ import type {
 } from '@forge/contracts';
 import { PersistenceError } from '../errors.js';
 import type { DatabaseClient, WorkerLeaseRow } from '../types.js';
+import { PgOutboxRepository } from './pg-outbox-repository.js';
 import type { WorkerLeaseRepository } from './contracts/worker-lease-repository.contract.js';
 
 interface JobLockRow {
@@ -342,6 +345,26 @@ export class PgWorkerLeaseRepository implements WorkerLeaseRepository {
           if (res.status === 'ACQUIRED') acquiredCount++;
           else if (res.status === 'CONFLICT') conflictCount++;
           else if (res.status === 'NOT_CLAIMABLE') notClaimableCount++;
+        }
+
+        // PR 21: co-commit one outbox row per FRESH acquisition inside this transaction.
+        if (options.pendingOutbox) {
+          const outbox = new PgOutboxRepository(txClient);
+          const acquiredItems = new Map<string, BatchClaimItem>();
+          for (const item of items) {
+            if (!acquiredItems.has(item.jobId)) acquiredItems.set(item.jobId, item);
+          }
+          const rows: OutboxEnqueueInput[] = [];
+          for (const res of finalResults) {
+            if (res.status !== 'ACQUIRED' || res.isIdempotent === true) continue;
+            const item = acquiredItems.get(res.jobId);
+            if (!item) continue;
+            rows.push(options.pendingOutbox.rowForAcquired(item, res.lease));
+          }
+          for (const row of rows) {
+            // A throw here propagates out of the callback → withTransactionClient ROLLBACK.
+            await outbox.enqueue(row);
+          }
         }
 
         return {

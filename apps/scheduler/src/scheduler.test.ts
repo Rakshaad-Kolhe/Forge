@@ -1,5 +1,9 @@
-import type { UnschedulableDecision } from '@forge/contracts';
-import type { LeaseRecoveryService } from '@forge/database';
+import type {
+  BatchClaimOptions,
+  OutboxEnqueueInput,
+  UnschedulableDecision,
+} from '@forge/contracts';
+import type { LeaseRecoveryService, WorkerLeaseRepository } from '@forge/database';
 import { InProcessEventBus, type ForgeEvent } from '@forge/events';
 import { createLogger } from '@forge/logging';
 import { createJobId, createPipelineRunId, Job, type WorkerCandidate } from '@forge/pipeline';
@@ -1148,7 +1152,11 @@ describe('Scheduler — evaluatePrioritizedWork & schedulePrioritized', () => {
       });
 
       const result = await scheduler.recoverExpiredLeases({ batchSize: 5 });
-      expect(mockRecoveryService.recoverExpiredLeases).toHaveBeenCalledWith({ batchSize: 5 });
+      // No eventPublisher configured -> outbox disabled -> no WorkerLost mapper passed.
+      expect(mockRecoveryService.recoverExpiredLeases).toHaveBeenCalledWith(
+        { batchSize: 5 },
+        undefined,
+      );
       expect(result.recoveredCount).toBe(1);
       expect(result.details[0]?.action).toBe('REQUEUED');
     });
@@ -1383,7 +1391,7 @@ describe('Scheduler — lifecycle events (PR 20)', () => {
     await bus.close();
   });
 
-  it('emits one JobClaimed per acquired item on the batched claim path', async () => {
+  it('co-commits one JobClaimed outbox row per acquired item on the batched claim path', async () => {
     const bus = new InProcessEventBus();
     const seen: ForgeEvent[] = [];
     bus.subscribe((e) => void seen.push(e));
@@ -1405,26 +1413,42 @@ describe('Scheduler — lifecycle events (PR 20)', () => {
       requirements: { executor: 'docker', cpuCores: 1, memoryBytes: 1024 },
     });
 
+    // The real Pg repository inserts these rows inside the lease transaction; the mock
+    // just exercises the `pendingOutbox.rowForAcquired` mapper the scheduler supplies.
+    const outboxRows: OutboxEnqueueInput[] = [];
     const mockLeaseRepo = {
       claim: vi.fn(),
-      claimBatch: vi.fn().mockResolvedValue({
-        results: [
+      claimBatch: vi.fn().mockImplementation((opts: BatchClaimOptions) => {
+        const results = [
           {
             jobId: 'job-ev-a',
             workerId: 'worker-ev',
-            status: 'ACQUIRED',
+            status: 'ACQUIRED' as const,
             lease: leaseFor('job-ev-a', 'worker-ev'),
           },
           {
             jobId: 'job-ev-b',
             workerId: 'worker-ev',
-            status: 'ACQUIRED',
+            status: 'ACQUIRED' as const,
             lease: leaseFor('job-ev-b', 'worker-ev'),
           },
-        ],
-        acquiredCount: 2,
-        conflictCount: 0,
-        notClaimableCount: 0,
+        ];
+        if (opts.pendingOutbox) {
+          for (const r of results) {
+            outboxRows.push(
+              opts.pendingOutbox.rowForAcquired(
+                { jobId: r.jobId, workerId: r.workerId, durationMs: 30000 },
+                r.lease,
+              ),
+            );
+          }
+        }
+        return Promise.resolve({
+          results,
+          acquiredCount: 2,
+          conflictCount: 0,
+          notClaimableCount: 0,
+        });
       }),
       renew: vi.fn(),
       release: vi.fn(),
@@ -1442,8 +1466,13 @@ describe('Scheduler — lifecycle events (PR 20)', () => {
 
     await scheduler.schedulePrioritized([jobA, jobB]);
 
-    const claimed = seen.filter((e) => e.event_type === 'JobClaimed');
-    expect(claimed.map((e) => e.job_id).sort()).toEqual(['job-ev-a', 'job-ev-b']);
+    // One durable JobClaimed row per acquired item...
+    expect(outboxRows.map((r) => r.eventType)).toEqual(['JobClaimed', 'JobClaimed']);
+    expect(
+      outboxRows.map((r) => (r.payload as { payload: { job_id: string } }).payload.job_id).sort(),
+    ).toEqual(['job-ev-a', 'job-ev-b']);
+    // ...and NOT also published best-effort on the bus (single authoritative producer).
+    expect(seen.filter((e) => e.event_type === 'JobClaimed')).toHaveLength(0);
     await bus.close();
   });
 
@@ -1469,49 +1498,72 @@ describe('Scheduler — lifecycle events (PR 20)', () => {
     expect(decision.status).toBe('SCHEDULED');
   });
 
-  it('emits WorkerLost for each reconciled lease and skips NO_OP', async () => {
-    const bus = new InProcessEventBus();
-    const seen: ForgeEvent[] = [];
-    bus.subscribe((e) => void seen.push(e));
+  it('maps each reconciled lease to a WorkerLost outbox row and skips NO_OP', async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
 
+    const details = [
+      {
+        leaseId: 'l1',
+        jobId: 'j1',
+        workerId: 'w1',
+        action: 'REQUEUED' as const,
+        nextAttemptAt: new Date(),
+      },
+      {
+        leaseId: 'l2',
+        jobId: 'j2',
+        workerId: 'w2',
+        action: 'DEAD_LETTERED' as const,
+        deadLetterReason: 'WORKER_LOSS_RETRY_EXHAUSTED' as const,
+      },
+      { leaseId: 'l3', jobId: 'j3', workerId: 'w3', action: 'NO_OP' as const },
+    ];
+
+    // The real LeaseRecoveryService co-commits these; the mock just runs the mapper the
+    // scheduler hands it (Task 15 signature) so we can assert its output.
+    const mappedRows: OutboxEnqueueInput[] = [];
     const recoveryService = {
-      recoverExpiredLeases: vi.fn().mockResolvedValue({
-        recoveredCount: 3,
-        details: [
-          {
-            leaseId: 'l1',
-            jobId: 'j1',
-            workerId: 'w1',
-            action: 'REQUEUED',
-            nextAttemptAt: new Date(),
-          },
-          {
-            leaseId: 'l2',
-            jobId: 'j2',
-            workerId: 'w2',
-            action: 'DEAD_LETTERED',
-            deadLetterReason: 'WORKER_LOSS_RETRY_EXHAUSTED',
-          },
-          { leaseId: 'l3', jobId: 'j3', workerId: 'w3', action: 'NO_OP' },
-        ],
-      }),
+      recoverExpiredLeases: vi.fn(
+        async (
+          _options: unknown,
+          mapper?: (r: (typeof details)[number]) => OutboxEnqueueInput | null,
+        ) => {
+          if (mapper) {
+            for (const record of details) {
+              const row = mapper(record);
+              if (row) {
+                mappedRows.push(row);
+              }
+            }
+          }
+          return { recoveredCount: 2, details };
+        },
+      ),
     } as unknown as LeaseRecoveryService;
 
-    const scheduler = new ForgeScheduler({ recoveryService, eventPublisher: bus });
-    const result = await scheduler.recoverExpiredLeases();
-    expect(result.recoveredCount).toBe(3);
-
-    const lost = seen.filter((e) => e.event_type === 'WorkerLost');
-    expect(lost).toHaveLength(2);
-    expect(lost.map((e) => e.job_id).sort()).toEqual(['j1', 'j2']);
-    const dl = lost.find((e) => e.job_id === 'j2');
-    expect(dl).toMatchObject({
-      payload: {
-        recovery_action: 'DEAD_LETTERED',
-        dead_letter_reason: 'WORKER_LOSS_RETRY_EXHAUSTED',
-      },
+    const scheduler = new ForgeScheduler({
+      recoveryService,
+      eventPublisher: { publish },
+      leaseRepository: { claimBatch: vi.fn() } as unknown as WorkerLeaseRepository,
     });
-    await bus.close();
+
+    const result = await scheduler.recoverExpiredLeases();
+    expect(result.recoveredCount).toBe(2);
+
+    // One WorkerLost row per reconciled record; NO_OP maps to nothing.
+    expect(mappedRows).toHaveLength(2);
+    expect(mappedRows.map((r) => r.eventType)).toEqual(['WorkerLost', 'WorkerLost']);
+    expect(mappedRows.map((r) => (r.payload as { job_id: string }).job_id).sort()).toEqual([
+      'j1',
+      'j2',
+    ]);
+    const dl = mappedRows.find((r) => (r.payload as { job_id: string }).job_id === 'j2');
+    expect((dl?.payload as { payload: Record<string, unknown> }).payload).toMatchObject({
+      recovery_action: 'DEAD_LETTERED',
+      dead_letter_reason: 'WORKER_LOSS_RETRY_EXHAUSTED',
+    });
+    // Single authoritative producer: durable only, never also published best-effort.
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it('publisher failure never breaks placement (best-effort)', async () => {

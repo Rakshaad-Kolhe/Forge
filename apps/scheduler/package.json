@@ -15,6 +15,7 @@
     "@forge/database": "*",
     "@forge/events": "*",
     "@forge/logging": "*",
+    "@forge/outbox": "*",
     "@forge/pipeline": "*",
     "@forge/queue": "*",
     "@forge/worker-registry": "*"

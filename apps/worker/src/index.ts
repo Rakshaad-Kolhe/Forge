@@ -19,7 +19,9 @@ import {
 import {
   createForgeEvent,
   deriveLogChunkEvents,
+  parseForgeEvent,
   safePublish,
+  toOutboxEnqueueInput,
   type EventPublisher,
   type ForgeEvent,
   type JobFailureKind,
@@ -52,12 +54,15 @@ export interface StartWorkerOptions {
   heartbeatIntervalMs?: number;
   drainTimeoutMs?: number;
   /**
-   * Optional typed lifecycle event publisher. When set, the worker emits `WorkerRegistered`,
-   * `WorkerHeartbeat`, `JobStarted`, `JobLogChunk` (derived from the completed execution
-   * result), the terminal `JobSucceeded` / `JobFailed` / `JobCancelled`, and `JobQueued`
-   * when an attempt is re-queued for retry. Publication is best-effort and happens only
-   * after the authoritative PostgreSQL state has been persisted; a failure is logged and
-   * never disrupts execution. When omitted, the worker behaves exactly as before.
+   * Optional typed lifecycle event publisher. When set together with `pool`, the worker
+   * co-commits the durable job lifecycle events — `JobStarted` (with the RUNNING state)
+   * and the terminal `JobSucceeded` / `JobFailed` / `JobCancelled` plus `JobQueued` on
+   * retry (with the terminal state) — into the transactional outbox, so they are delivered
+   * at least once even if this process crashes. `WorkerRegistered`, `WorkerHeartbeat`, and
+   * the derived `JobLogChunk` stream remain best-effort: published directly, after the
+   * committed state, with failures logged and never disrupting execution. Setting a
+   * publisher alongside `jobRepository`-only persistence (no `pool`) is rejected — there is
+   * no transaction to co-commit the outbox row. When omitted, the worker behaves as before.
    */
   eventPublisher?: EventPublisher;
 }
@@ -301,6 +306,15 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
       );
     }
 
+    // Durable lifecycle events require a transactional pool: the outbox row must be
+    // co-committed with the job/attempt state. jobRepository-only persistence commits the
+    // state without the outbox, so pairing it with a publisher is disallowed.
+    if (options?.jobRepository && !options?.pool && options?.eventPublisher) {
+      throw new Error(
+        'Worker durable events require a transactional pool; jobRepository-only persistence cannot guarantee the outbox',
+      );
+    }
+
     const run = async (): Promise<ExecuteJobResult> => {
       const { job, leaseId } = jobOpts;
 
@@ -319,34 +333,39 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
       attempt.start(new Date().toISOString());
       job.start();
 
-      // Persist RUNNING state to authoritative store
+      // JobStarted lifecycle event, constructed before the transaction so it can be
+      // co-committed into the outbox alongside the RUNNING state.
+      const jobStartedEvent = createForgeEvent('JobStarted', {
+        correlation: {
+          run_id: job.pipelineRunId,
+          job_id: job.id,
+          attempt_id: attempt.id,
+          worker_id: workerId,
+        },
+        payload: {
+          job_id: job.id,
+          attempt_id: attempt.id,
+          worker_id: workerId,
+          attempt_number: attempt.attemptNumber,
+        },
+      });
+
+      // Persist RUNNING state to the authoritative store, co-committing the JobStarted
+      // outbox row in the same transaction when a durable publisher is configured.
       if (options?.pool) {
-        await withTransaction(options.pool, async (tx) => {
-          await tx.jobs.save(job);
-          await tx.jobAttempts.save(attempt);
-        });
+        await withTransaction(
+          options.pool,
+          async (tx) => {
+            await tx.jobs.save(job);
+            await tx.jobAttempts.save(attempt);
+            if (options.eventPublisher) {
+              await tx.outbox.enqueue(toOutboxEnqueueInput(parseForgeEvent(jobStartedEvent)));
+            }
+          },
+          { outboxMaxPayloadBytes: config.outboxMaxPayloadBytes },
+        );
       } else if (options?.jobRepository) {
         await options.jobRepository.save(job);
-      }
-
-      // Lifecycle event: execution has started and RUNNING state is committed.
-      if (options?.eventPublisher) {
-        await publish(
-          createForgeEvent('JobStarted', {
-            correlation: {
-              run_id: job.pipelineRunId,
-              job_id: job.id,
-              attempt_id: attempt.id,
-              worker_id: workerId,
-            },
-            payload: {
-              job_id: job.id,
-              attempt_id: attempt.id,
-              worker_id: workerId,
-              attempt_number: attempt.attemptNumber,
-            },
-          }),
-        );
       }
 
       // 3. Periodic lease renewal background timer
@@ -492,120 +511,133 @@ export function startWorker(options?: StartWorkerOptions): WorkerShell {
         }
       }
 
-      // 6. Transactional persistence
+      // 6. Terminal lifecycle event(s), constructed before the transaction so they can be
+      //    co-committed into the outbox alongside the terminal job/attempt state:
+      //    the terminal outcome, plus — on retry — the re-queue notification.
+      const terminalCorrelation = {
+        run_id: job.pipelineRunId,
+        job_id: job.id,
+        attempt_id: attempt.id,
+        worker_id: workerId,
+      };
+      const terminalEvents: ForgeEvent[] = [];
+
+      if (ownershipLost) {
+        terminalEvents.push(
+          createForgeEvent('JobFailed', {
+            correlation: terminalCorrelation,
+            payload: {
+              job_id: job.id,
+              attempt_id: attempt.id,
+              worker_id: workerId,
+              attempt_number: attempt.attemptNumber,
+              failure_kind: 'LEASE_LOST',
+              reason: 'Lease ownership lost during execution',
+              exit_code: execResult.exitCode,
+              retry_scheduled: false,
+            },
+          }),
+        );
+      } else if (execResult.status === 'SUCCEEDED') {
+        terminalEvents.push(
+          createForgeEvent('JobSucceeded', {
+            correlation: terminalCorrelation,
+            payload: {
+              job_id: job.id,
+              attempt_id: attempt.id,
+              worker_id: workerId,
+              attempt_number: attempt.attemptNumber,
+              duration_ms: execResult.durationMs,
+              exit_code: execResult.exitCode,
+            },
+          }),
+        );
+      } else if (execResult.status === 'CANCELLED') {
+        terminalEvents.push(
+          createForgeEvent('JobCancelled', {
+            correlation: terminalCorrelation,
+            payload: {
+              job_id: job.id,
+              attempt_id: attempt.id,
+              worker_id: workerId,
+              attempt_number: attempt.attemptNumber,
+            },
+          }),
+        );
+      } else {
+        const retryScheduled = retryDecision?.action === 'RETRY';
+        const failureKind: JobFailureKind =
+          execResult.status === 'TIMED_OUT'
+            ? 'TIMED_OUT'
+            : executorThrew
+              ? 'EXECUTOR_ERROR'
+              : 'FAILED';
+        const nextAttemptAt = job.nextAttemptAt?.toISOString();
+
+        terminalEvents.push(
+          createForgeEvent('JobFailed', {
+            correlation: terminalCorrelation,
+            payload: {
+              job_id: job.id,
+              attempt_id: attempt.id,
+              worker_id: workerId,
+              attempt_number: attempt.attemptNumber,
+              failure_kind: failureKind,
+              reason:
+                execResult.failureReason ??
+                (execResult.status === 'TIMED_OUT' ? 'Execution timed out' : 'Execution failed'),
+              exit_code: execResult.exitCode,
+              retry_scheduled: retryScheduled,
+              ...(retryScheduled && nextAttemptAt ? { next_attempt_at: nextAttemptAt } : {}),
+            },
+          }),
+        );
+
+        if (retryDecision?.action === 'RETRY') {
+          terminalEvents.push(
+            createForgeEvent('JobQueued', {
+              correlation: { run_id: job.pipelineRunId, job_id: job.id },
+              payload: {
+                job_id: job.id,
+                run_id: job.pipelineRunId,
+                priority: job.priority,
+                attempt_number: retryDecision.nextAttemptNumber,
+                ...(nextAttemptAt ? { next_attempt_at: nextAttemptAt } : {}),
+              },
+            }),
+          );
+        }
+      }
+
+      // 6a. Transactional persistence of terminal state, co-committing the terminal
+      //     outbox row(s) in the same transaction when a durable publisher is configured.
       if (options?.pool) {
-        await withTransaction(options.pool, async (tx) => {
-          await tx.jobs.save(job);
-          await tx.jobAttempts.save(attempt);
-        });
+        await withTransaction(
+          options.pool,
+          async (tx) => {
+            await tx.jobs.save(job);
+            await tx.jobAttempts.save(attempt);
+            if (options.eventPublisher) {
+              for (const e of terminalEvents) {
+                await tx.outbox.enqueue(toOutboxEnqueueInput(parseForgeEvent(e)));
+              }
+            }
+          },
+          { outboxMaxPayloadBytes: config.outboxMaxPayloadBytes },
+        );
       } else if (options?.jobRepository) {
         await options.jobRepository.save(job);
       }
 
-      // 6b. Lifecycle events (best-effort, after the committed state):
-      //     the derived bounded log stream, then the terminal outcome, then — on retry —
-      //     the re-queue notification. Emitted before lease release so the events reflect
-      //     committed job state regardless of the release result.
+      // 6b. Best-effort derived bounded log stream (JobLogChunk). Emitted after the
+      //     committed terminal state and before lease release; a publish failure is
+      //     logged and never disrupts execution.
       if (options?.eventPublisher) {
         for (const chunkEvent of deriveLogChunkEvents(
           { stdout: execResult.stdout, stderr: execResult.stderr, truncated: execResult.truncated },
           { job_id: job.id, attempt_id: attempt.id },
         )) {
           await publish(chunkEvent);
-        }
-
-        const terminalCorrelation = {
-          run_id: job.pipelineRunId,
-          job_id: job.id,
-          attempt_id: attempt.id,
-          worker_id: workerId,
-        };
-
-        if (ownershipLost) {
-          await publish(
-            createForgeEvent('JobFailed', {
-              correlation: terminalCorrelation,
-              payload: {
-                job_id: job.id,
-                attempt_id: attempt.id,
-                worker_id: workerId,
-                attempt_number: attempt.attemptNumber,
-                failure_kind: 'LEASE_LOST',
-                reason: 'Lease ownership lost during execution',
-                exit_code: execResult.exitCode,
-                retry_scheduled: false,
-              },
-            }),
-          );
-        } else if (execResult.status === 'SUCCEEDED') {
-          await publish(
-            createForgeEvent('JobSucceeded', {
-              correlation: terminalCorrelation,
-              payload: {
-                job_id: job.id,
-                attempt_id: attempt.id,
-                worker_id: workerId,
-                attempt_number: attempt.attemptNumber,
-                duration_ms: execResult.durationMs,
-                exit_code: execResult.exitCode,
-              },
-            }),
-          );
-        } else if (execResult.status === 'CANCELLED') {
-          await publish(
-            createForgeEvent('JobCancelled', {
-              correlation: terminalCorrelation,
-              payload: {
-                job_id: job.id,
-                attempt_id: attempt.id,
-                worker_id: workerId,
-                attempt_number: attempt.attemptNumber,
-              },
-            }),
-          );
-        } else {
-          const retryScheduled = retryDecision?.action === 'RETRY';
-          const failureKind: JobFailureKind =
-            execResult.status === 'TIMED_OUT'
-              ? 'TIMED_OUT'
-              : executorThrew
-                ? 'EXECUTOR_ERROR'
-                : 'FAILED';
-          const nextAttemptAt = job.nextAttemptAt?.toISOString();
-
-          await publish(
-            createForgeEvent('JobFailed', {
-              correlation: terminalCorrelation,
-              payload: {
-                job_id: job.id,
-                attempt_id: attempt.id,
-                worker_id: workerId,
-                attempt_number: attempt.attemptNumber,
-                failure_kind: failureKind,
-                reason:
-                  execResult.failureReason ??
-                  (execResult.status === 'TIMED_OUT' ? 'Execution timed out' : 'Execution failed'),
-                exit_code: execResult.exitCode,
-                retry_scheduled: retryScheduled,
-                ...(retryScheduled && nextAttemptAt ? { next_attempt_at: nextAttemptAt } : {}),
-              },
-            }),
-          );
-
-          if (retryDecision?.action === 'RETRY') {
-            await publish(
-              createForgeEvent('JobQueued', {
-                correlation: { run_id: job.pipelineRunId, job_id: job.id },
-                payload: {
-                  job_id: job.id,
-                  run_id: job.pipelineRunId,
-                  priority: job.priority,
-                  attempt_number: retryDecision.nextAttemptNumber,
-                  ...(nextAttemptAt ? { next_attempt_at: nextAttemptAt } : {}),
-                },
-              }),
-            );
-          }
         }
       }
 

@@ -78,6 +78,18 @@ export class PersistenceError extends DatabaseError {
 }
 
 /**
+ * Thrown by the outbox repository when an enqueue payload is not a valid object,
+ * has a non-UUID-shaped event_id, or exceeds the configured maximum serialized size.
+ * When thrown inside a transaction it rolls back the associated state transition.
+ */
+export class OutboxPayloadError extends DatabaseError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OutboxPayloadError';
+  }
+}
+
+/**
  * Thrown when database migrations fail to execute or verify.
  */
 export class MigrationError extends DatabaseError {

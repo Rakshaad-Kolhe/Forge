@@ -2,6 +2,7 @@ import type pg from 'pg';
 import { PgDeadLetterRepository } from './repositories/pg-dead-letter-repository.js';
 import { PgJobAttemptRepository } from './repositories/pg-job-attempt-repository.js';
 import { PgJobRepository } from './repositories/pg-job-repository.js';
+import { PgOutboxRepository } from './repositories/pg-outbox-repository.js';
 import { PgPipelineRepository } from './repositories/pg-pipeline-repository.js';
 import { PgPipelineRunRepository } from './repositories/pg-pipeline-run-repository.js';
 import { PgWorkerLeaseRepository } from './repositories/pg-worker-lease-repository.js';
@@ -15,6 +16,7 @@ export interface TransactionContext {
   jobAttempts: PgJobAttemptRepository;
   workerLeases: PgWorkerLeaseRepository;
   deadLetterJobs: PgDeadLetterRepository;
+  outbox: PgOutboxRepository;
 }
 
 /**
@@ -26,6 +28,7 @@ export interface TransactionContext {
 export async function withTransaction<T>(
   pool: DatabasePool,
   callback: (tx: TransactionContext) => Promise<T>,
+  options?: { readonly outboxMaxPayloadBytes?: number },
 ): Promise<T> {
   const client = await pool.connect();
 
@@ -40,6 +43,12 @@ export async function withTransaction<T>(
       jobAttempts: new PgJobAttemptRepository(client),
       workerLeases: new PgWorkerLeaseRepository(client),
       deadLetterJobs: new PgDeadLetterRepository(client),
+      outbox: new PgOutboxRepository(
+        client,
+        options?.outboxMaxPayloadBytes !== undefined
+          ? { maxPayloadBytes: options.outboxMaxPayloadBytes }
+          : {},
+      ),
     };
 
     const result = await callback(txContext);

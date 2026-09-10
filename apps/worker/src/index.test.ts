@@ -980,16 +980,19 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
     return { bus, events };
   };
 
-  it('emits JobStarted -> JobLogChunk -> JobSucceeded on a successful execution', async () => {
+  // PR 21: JobStarted / terminal / JobQueued are now co-committed to the transactional
+  // outbox (they require a `pool`); only JobLogChunk stays on the best-effort bus. These
+  // pool-less unit tests therefore assert the bus receives ONLY JobLogChunk and that
+  // execution behaviour is unchanged. The durable rows are asserted in
+  // `worker-execution.integration.test.ts` (real PostgreSQL + Docker).
+  it('publishes only the best-effort JobLogChunk on the bus for a successful execution', async () => {
     const { bus, events } = collectorBus();
     const lease = leaseRecord('lease-ev-1', 'job-ev-1');
     const attempt = mockAttempt('job-ev-1-attempt-1');
-    const { repo } = jobRepoRecording();
 
     const worker = startWorker({
       workerId: 'worker-ev',
       leaseRepository: leaseRepoFor(lease),
-      jobRepository: repo as unknown as JobRepository,
       executor: {
         name: 'mock',
         isAvailable: vi.fn().mockResolvedValue(true),
@@ -1000,23 +1003,14 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       eventPublisher: bus,
     });
 
-    await worker.executeJob({
+    const { result } = await worker.executeJob({
       job: mockJob('job-ev-1', attempt) as unknown as Job,
       leaseId: 'lease-ev-1',
     });
 
-    expect(events.map((e) => e.event_type)).toEqual(['JobStarted', 'JobLogChunk', 'JobSucceeded']);
-    const started = events[0];
-    expect(started).toMatchObject({
-      event_type: 'JobStarted',
-      run_id: 'run-ev',
-      job_id: 'job-ev-1',
-      attempt_id: 'job-ev-1-attempt-1',
-      worker_id: 'worker-ev',
-      payload: { attempt_number: 1 },
-    });
-    const chunk = events[1];
-    expect(chunk).toMatchObject({
+    expect(result.status).toBe('SUCCEEDED');
+    expect(events.map((e) => e.event_type)).toEqual(['JobLogChunk']);
+    expect(events[0]).toMatchObject({
       event_type: 'JobLogChunk',
       payload: {
         stream: 'stdout',
@@ -1026,24 +1020,17 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
         truncated: false,
       },
     });
-    const succeeded = events[2];
-    expect(succeeded).toMatchObject({
-      event_type: 'JobSucceeded',
-      payload: { job_id: 'job-ev-1', worker_id: 'worker-ev', duration_ms: 250, exit_code: 0 },
-    });
     await bus.close();
   });
 
-  it('emits JobFailed with failure_kind FAILED and retry_scheduled false when a non-retryable attempt fails', async () => {
+  it('does not publish JobFailed / JobQueued on the bus when a non-retryable attempt fails', async () => {
     const { bus, events } = collectorBus();
     const lease = leaseRecord('lease-ev-2', 'job-ev-2');
     const attempt = mockAttempt('job-ev-2-attempt-1');
-    const { repo } = jobRepoRecording();
 
     const worker = startWorker({
       workerId: 'worker-ev',
       leaseRepository: leaseRepoFor(lease),
-      jobRepository: repo as unknown as JobRepository,
       executor: {
         name: 'mock',
         isAvailable: vi.fn().mockResolvedValue(true),
@@ -1059,35 +1046,29 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       eventPublisher: bus,
     });
 
-    await worker.executeJob({
+    const { result, retryDecision } = await worker.executeJob({
       job: mockJob('job-ev-2', attempt) as unknown as Job,
       leaseId: 'lease-ev-2',
     });
 
-    const failed = events.find((e) => e.event_type === 'JobFailed');
-    expect(failed).toMatchObject({
-      event_type: 'JobFailed',
-      payload: {
-        job_id: 'job-ev-2',
-        failure_kind: 'FAILED',
-        reason: 'Process exited with code 7',
-        exit_code: 7,
-        retry_scheduled: false,
-      },
-    });
+    expect(result.status).toBe('FAILED');
+    expect(retryDecision?.action).not.toBe('RETRY');
+    // Only the derived best-effort stderr log chunk reaches the bus.
+    expect(events.map((e) => e.event_type)).toEqual(['JobLogChunk']);
+    expect(events.some((e) => e.event_type === 'JobFailed')).toBe(false);
     expect(events.some((e) => e.event_type === 'JobQueued')).toBe(false);
     await bus.close();
   });
 
-  it('emits JobCancelled when the execution is cancelled', async () => {
+  it('does not publish JobCancelled on the bus when the execution is cancelled', async () => {
     const { bus, events } = collectorBus();
     const lease = leaseRecord('lease-ev-3', 'job-ev-3');
     const attempt = mockAttempt('job-ev-3-attempt-1');
+    const job = mockJob('job-ev-3', attempt);
 
     const worker = startWorker({
       workerId: 'worker-ev',
       leaseRepository: leaseRepoFor(lease),
-      jobRepository: jobRepoRecording().repo as unknown as JobRepository,
       executor: {
         name: 'mock',
         isAvailable: vi.fn().mockResolvedValue(true),
@@ -1100,27 +1081,26 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       eventPublisher: bus,
     });
 
-    await worker.executeJob({
-      job: mockJob('job-ev-3', attempt) as unknown as Job,
+    const { result } = await worker.executeJob({
+      job: job as unknown as Job,
       leaseId: 'lease-ev-3',
     });
 
-    expect(events.map((e) => e.event_type)).toContain('JobCancelled');
-    expect(events.find((e) => e.event_type === 'JobCancelled')).toMatchObject({
-      payload: { job_id: 'job-ev-3', worker_id: 'worker-ev', attempt_number: 1 },
-    });
+    expect(result.status).toBe('CANCELLED');
+    expect(job.cancel).toHaveBeenCalled();
+    expect(events.some((e) => e.event_type === 'JobCancelled')).toBe(false);
     await bus.close();
   });
 
-  it('classifies a wall-clock timeout as JobFailed failure_kind TIMED_OUT', async () => {
+  it('does not publish a JobFailed lifecycle event on the bus for a wall-clock timeout', async () => {
     const { bus, events } = collectorBus();
     const lease = leaseRecord('lease-ev-4', 'job-ev-4');
     const attempt = mockAttempt('job-ev-4-attempt-1');
+    const job = mockJob('job-ev-4', attempt);
 
     const worker = startWorker({
       workerId: 'worker-ev',
       leaseRepository: leaseRepoFor(lease),
-      jobRepository: jobRepoRecording().repo as unknown as JobRepository,
       executor: {
         name: 'mock',
         isAvailable: vi.fn().mockResolvedValue(true),
@@ -1135,18 +1115,18 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       eventPublisher: bus,
     });
 
-    await worker.executeJob({
-      job: mockJob('job-ev-4', attempt) as unknown as Job,
+    const { result } = await worker.executeJob({
+      job: job as unknown as Job,
       leaseId: 'lease-ev-4',
     });
 
-    expect(events.find((e) => e.event_type === 'JobFailed')).toMatchObject({
-      payload: { failure_kind: 'TIMED_OUT', exit_code: null, retry_scheduled: false },
-    });
+    expect(result.status).toBe('TIMED_OUT');
+    expect(job.timeout).toHaveBeenCalled();
+    expect(events.some((e) => e.event_type === 'JobFailed')).toBe(false);
     await bus.close();
   });
 
-  it('emits JobFailed(retry_scheduled) followed by JobQueued when a retry is scheduled', async () => {
+  it('does not publish JobFailed / JobQueued on the bus when a retry is scheduled', async () => {
     const { bus, events } = collectorBus();
     const lease = leaseRecord('lease-ev-5', 'job-ev-5');
     const attempt = {
@@ -1161,7 +1141,6 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
     const worker = startWorker({
       workerId: 'worker-ev',
       leaseRepository: leaseRepoFor(lease),
-      jobRepository: jobRepoRecording().repo as unknown as JobRepository,
       executor: {
         name: 'mock',
         isAvailable: vi.fn().mockResolvedValue(true),
@@ -1185,18 +1164,15 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       nextAttemptAt: new Date('2026-09-08T12:05:00.000Z'),
     });
 
-    await worker.executeJob({ job: job as unknown as Job, leaseId: 'lease-ev-5' });
+    const { retryDecision } = await worker.executeJob({
+      job: job as unknown as Job,
+      leaseId: 'lease-ev-5',
+    });
 
-    const types = events.map((e) => e.event_type);
-    expect(types).toContain('JobFailed');
-    expect(types).toContain('JobQueued');
-    expect(types.indexOf('JobFailed')).toBeLessThan(types.indexOf('JobQueued'));
-    expect(events.find((e) => e.event_type === 'JobFailed')).toMatchObject({
-      payload: { retry_scheduled: true, failure_kind: 'FAILED' },
-    });
-    expect(events.find((e) => e.event_type === 'JobQueued')).toMatchObject({
-      payload: { job_id: 'job-ev-5', run_id: 'run-ev', attempt_number: 2 },
-    });
+    expect(retryDecision?.action).toBe('RETRY');
+    expect(job.transitionTo).toHaveBeenCalledWith('QUEUED');
+    expect(events.some((e) => e.event_type === 'JobFailed')).toBe(false);
+    expect(events.some((e) => e.event_type === 'JobQueued')).toBe(false);
     await bus.close();
   });
 
@@ -1250,7 +1226,7 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
     await bus.close();
   });
 
-  it('a failing publisher never breaks execution and the failure is logged', async () => {
+  it('a failing best-effort publisher never breaks execution and the failure is logged', async () => {
     const logs: string[] = [];
     const logger = createLogger({
       service: 'worker',
@@ -1258,20 +1234,19 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
       writeFn: (m) => logs.push(m),
     });
     const lease = leaseRecord('lease-ev-6', 'job-ev-6');
-    const { repo, saved } = jobRepoRecording();
     const attempt = mockAttempt('job-ev-6-attempt-1');
+    const publish = vi.fn().mockRejectedValue(new Error('bus offline'));
 
     const worker = startWorker({
       workerId: 'worker-ev',
       logger,
       leaseRepository: leaseRepoFor(lease),
-      jobRepository: repo as unknown as JobRepository,
       executor: {
         name: 'mock',
         isAvailable: vi.fn().mockResolvedValue(true),
         execute: vi.fn().mockResolvedValue(execResult({ stdout: 'ok' })),
       } as unknown as Executor,
-      eventPublisher: { publish: vi.fn().mockRejectedValue(new Error('bus offline')) },
+      eventPublisher: { publish },
     });
 
     const { result } = await worker.executeJob({
@@ -1280,7 +1255,9 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
     });
 
     expect(result.status).toBe('SUCCEEDED');
-    expect(saved.length).toBeGreaterThan(0);
+    // The only bus publish is the best-effort JobLogChunk; its rejection is swallowed + logged.
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0]?.[0]).toMatchObject({ event_type: 'JobLogChunk' });
     expect(logs.some((l) => l.includes('Event publication failed'))).toBe(true);
   });
 
@@ -1301,6 +1278,100 @@ describe('Worker Service Shell — lifecycle events (PR 20)', () => {
     const { result } = await worker.executeJob({
       job: mockJob('job-ev-7', attempt) as unknown as Job,
       leaseId: 'lease-ev-7',
+    });
+    expect(result.status).toBe('SUCCEEDED');
+  });
+});
+
+describe('Worker durable events guard (PR 21)', () => {
+  const fakeJobRepo = () => ({
+    save: vi.fn(async () => {}),
+    findById: vi.fn(),
+    findByPipelineRunId: vi.fn(),
+  });
+
+  const okExecutor = () =>
+    ({
+      name: 'mock',
+      isAvailable: vi.fn().mockResolvedValue(true),
+      execute: vi.fn().mockResolvedValue({
+        status: 'SUCCEEDED',
+        exitCode: 0,
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        durationMs: 5,
+        stdout: '',
+        stderr: '',
+        truncated: false,
+      }),
+    }) as unknown as Executor;
+
+  const guardJob = () => {
+    const attempt = {
+      id: 'a1',
+      attemptNumber: 1,
+      status: 'RUNNING',
+      start: vi.fn(),
+      succeed: vi.fn(),
+      fail: vi.fn(),
+      timeout: vi.fn(),
+      cancel: vi.fn(),
+    };
+    return {
+      id: 'job-guard',
+      pipelineRunId: 'run-guard',
+      command: 'echo hi',
+      priority: 0,
+      status: 'QUEUED',
+      createAttempt: vi.fn().mockReturnValue(attempt),
+      start: vi.fn(),
+      succeed: vi.fn(),
+      fail: vi.fn(),
+      timeout: vi.fn(),
+      cancel: vi.fn(),
+      transitionTo: vi.fn(),
+      setNextAttemptAt: vi.fn(),
+      clearNextAttemptAt: vi.fn(),
+    };
+  };
+
+  it('executeJob throws when a publisher is configured without a transactional pool', async () => {
+    const shell = startWorker({
+      workerId: 'worker-guard',
+      jobRepository: fakeJobRepo() as unknown as JobRepository,
+      eventPublisher: { publish: async () => {} },
+      executor: okExecutor(),
+    });
+
+    await expect(
+      shell.executeJob({ job: guardJob() as unknown as Job, leaseId: 'l1' }),
+    ).rejects.toThrow(/transactional pool/);
+  });
+
+  it('executeJob does not fire the guard for jobRepository-only persistence with no publisher', async () => {
+    const shell = startWorker({
+      workerId: 'worker-guard-2',
+      jobRepository: fakeJobRepo() as unknown as JobRepository,
+      executor: okExecutor(),
+    });
+
+    const { result } = await shell.executeJob({
+      job: guardJob() as unknown as Job,
+      leaseId: 'l1',
+    });
+    expect(result.status).toBe('SUCCEEDED');
+  });
+
+  it('executeJob does not fire the guard for a publisher with no persistence at all', async () => {
+    const shell = startWorker({
+      workerId: 'worker-guard-3',
+      eventPublisher: { publish: async () => {} },
+      executor: okExecutor(),
+    });
+
+    const { result } = await shell.executeJob({
+      job: guardJob() as unknown as Job,
+      leaseId: 'l1',
     });
     expect(result.status).toBe('SUCCEEDED');
   });

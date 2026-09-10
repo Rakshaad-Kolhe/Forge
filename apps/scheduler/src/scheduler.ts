@@ -1,19 +1,24 @@
 import {
   DEFAULT_JOB_PRIORITY,
   DEFAULT_LEASE_BATCH_SIZE,
+  type BatchClaimItem,
+  type BatchClaimItemResult,
   type JobRequirements,
   type LeaseRecoveryOptions,
+  type OutboxEnqueueInput,
   type RecoverExpiredLeasesResult,
   type ScheduleDecision,
   type ScheduledDecision,
   type UnschedulableDecision,
+  type WorkerLease,
 } from '@forge/contracts';
 import type { Logger } from '@forge/logging';
 import {
   createForgeEvent,
+  parseForgeEvent,
   safePublish,
+  toOutboxEnqueueInput,
   type EventPublisher,
-  type WorkerLostRecoveryAction,
 } from '@forge/events';
 import {
   checkJobRequirementsValidity,
@@ -27,7 +32,11 @@ import type { JobQueue, QueueDelivery } from '@forge/queue';
 import { JobNotFoundError, JobSourceError, WorkerSourceError } from './errors.js';
 import { highestPriorityFirstPolicy } from './job-policy.js';
 import { deterministicFirstEligiblePolicy, getWorkerCandidateId } from './policy.js';
-import type { LeaseRecoveryService, WorkerLeaseRepository } from '@forge/database';
+import type {
+  LeaseRecoveryService,
+  OutboxRowForRecoveredLease,
+  WorkerLeaseRepository,
+} from '@forge/database';
 import type {
   EligibilityMatcher,
   JobOrderingPolicy,
@@ -312,10 +321,79 @@ export class ForgeScheduler implements Scheduler {
   }
 
   /**
+   * True when lifecycle events must be routed through the transactional outbox: an event
+   * publisher is configured AND the lease repository supports batched claiming (the only
+   * path that can co-commit a `JobClaimed` row inside the lease-INSERT transaction).
+   * When false, `JobClaimed` falls back to best-effort `safePublish` after the raw claim.
+   */
+  private get outboxEnabled(): boolean {
+    return Boolean(this.eventPublisher) && typeof this.leaseRepository?.claimBatch === 'function';
+  }
+
+  /**
+   * Whether recovery-sweep events (`WorkerLost`) should be co-committed to the outbox.
+   * Unlike {@link outboxEnabled}, this does NOT require `claimBatch` — the recovery mapper
+   * enqueues through `LeaseRecoveryService`'s own transaction, not the lease-claim path.
+   */
+  private get recoveryOutboxEnabled(): boolean {
+    return Boolean(this.eventPublisher);
+  }
+
+  /**
+   * Pure mapper: a freshly-acquired lease → a `JobClaimed` outbox row. Passed to
+   * `claimBatch({ pendingOutbox })` so the row is inserted in the same transaction as the
+   * lease. Runs no SQL; needs the minted `lease_id` / `lease_expires_at`, hence a function.
+   */
+  private readonly jobClaimedRowMapper = (
+    item: BatchClaimItem,
+    lease: WorkerLease,
+  ): OutboxEnqueueInput =>
+    toOutboxEnqueueInput(
+      parseForgeEvent(
+        createForgeEvent('JobClaimed', {
+          correlation: { job_id: item.jobId, worker_id: item.workerId },
+          payload: {
+            job_id: item.jobId,
+            worker_id: item.workerId,
+            lease_id: lease.id,
+            lease_expires_at: lease.expiresAt.toISOString(),
+          },
+        }),
+      ),
+    );
+
+  /**
+   * Pure mapper: a reconciled expired-lease record → a `WorkerLost` outbox row, co-committed
+   * with the recovery transaction by `LeaseRecoveryService`. `NO_OP` reconciliations emit
+   * nothing.
+   */
+  private readonly workerLostRowMapper: OutboxRowForRecoveredLease = (record) => {
+    if (record.action === 'NO_OP') {
+      return null;
+    }
+    const event = parseForgeEvent(
+      createForgeEvent('WorkerLost', {
+        correlation: { job_id: record.jobId, worker_id: record.workerId },
+        payload: {
+          worker_id: record.workerId,
+          job_id: record.jobId,
+          lease_id: record.leaseId,
+          recovery_action: record.action,
+          ...(record.deadLetterReason ? { dead_letter_reason: record.deadLetterReason } : {}),
+        },
+      }),
+    );
+    return toOutboxEnqueueInput(event);
+  };
+
+  /**
    * Publishes a `JobClaimed` lifecycle event after a lease has been atomically acquired and
    * the placement decision committed. Best-effort: never throws, never blocks placement.
    * The scheduler is the authoritative producer of `JobClaimed` (invariants §13.1 —
    * placement + lease claiming is the scheduler's responsibility).
+   *
+   * Only the raw-`claim` fallback uses this — when the outbox is enabled the row is
+   * co-committed via {@link jobClaimedRowMapper} and this is never called for that claim.
    */
   private async publishJobClaimed(
     jobId: string,
@@ -501,63 +579,16 @@ export class ForgeScheduler implements Scheduler {
               workerId: dec.workerId,
               durationMs: this.leaseDurationMs,
             })),
+            // Co-commit one `JobClaimed` outbox row per FRESH acquisition inside the
+            // lease-INSERT transaction. The scheduler is the authoritative producer.
+            ...(this.outboxEnabled
+              ? { pendingOutbox: { rowForAcquired: this.jobClaimedRowMapper } }
+              : {}),
           });
 
           for (let c = 0; c < chunk.length; c++) {
             const dec = chunk[c]!;
-            const itemRes = batchResult.results[c];
-
-            if (itemRes && itemRes.status === 'ACQUIRED') {
-              const decisionWithLease: ScheduledDecision = {
-                ...dec,
-                lease: itemRes.lease,
-              };
-              this.logger?.info('Scheduler placed job and acquired worker lease', {
-                jobId: dec.jobId,
-                workerId: dec.workerId,
-                leaseId: itemRes.lease.id,
-                expiresAt: itemRes.lease.expiresAt,
-              });
-              decisionMap.set(dec.jobId, decisionWithLease);
-              await this.publishJobClaimed(dec.jobId, dec.workerId, itemRes.lease);
-            } else if (itemRes && itemRes.status === 'CONFLICT') {
-              const unschedulable: UnschedulableDecision = {
-                status: 'UNSCHEDULABLE',
-                jobId: dec.jobId,
-                candidateWorkerCount: dec.candidateWorkerCount,
-                eligibleWorkerCount: dec.eligibleWorkerCount,
-                priority: dec.priority,
-                reason: 'LEASE_CONFLICT',
-                failureReasons: Object.freeze([
-                  `Active lease already held by worker "${itemRes.currentOwnerId}" until ${itemRes.expiresAt.toISOString()}`,
-                ]),
-              };
-              this.logger?.warn('Scheduler placement failed due to active lease conflict', {
-                jobId: dec.jobId,
-                currentOwnerId: itemRes.currentOwnerId,
-                expiresAt: itemRes.expiresAt,
-              });
-              decisionMap.set(dec.jobId, unschedulable);
-            } else {
-              const details =
-                (itemRes && 'details' in itemRes ? itemRes.details : undefined) ??
-                'Job not claimable';
-              const unschedulable: UnschedulableDecision = {
-                status: 'UNSCHEDULABLE',
-                jobId: dec.jobId,
-                candidateWorkerCount: dec.candidateWorkerCount,
-                eligibleWorkerCount: dec.eligibleWorkerCount,
-                priority: dec.priority,
-                reason: 'LEASE_CONFLICT',
-                failureReasons: Object.freeze([details]),
-              };
-              this.logger?.warn('Scheduler placement failed: job not claimable', {
-                jobId: dec.jobId,
-                reason: itemRes && 'reason' in itemRes ? itemRes.reason : undefined,
-                details,
-              });
-              decisionMap.set(dec.jobId, unschedulable);
-            }
+            decisionMap.set(dec.jobId, this.decisionFromBatchItem(dec, batchResult.results[c]));
           }
         }
 
@@ -651,11 +682,90 @@ export class ForgeScheduler implements Scheduler {
   }
 
   /**
+   * Maps a single batched-claim item result onto a ScheduleDecision. Shared by the batched
+   * placement path and the single placement path when the outbox is enabled. Never
+   * publishes: on the durable path the `JobClaimed` row is co-committed by `claimBatch`.
+   */
+  private decisionFromBatchItem(
+    decision: ScheduledDecision,
+    itemRes: BatchClaimItemResult | undefined,
+  ): ScheduleDecision {
+    if (itemRes && itemRes.status === 'ACQUIRED') {
+      const decisionWithLease: ScheduledDecision = {
+        ...decision,
+        lease: itemRes.lease,
+      };
+      this.logger?.info('Scheduler placed job and acquired worker lease', {
+        jobId: decision.jobId,
+        workerId: decision.workerId,
+        leaseId: itemRes.lease.id,
+        expiresAt: itemRes.lease.expiresAt,
+      });
+      return decisionWithLease;
+    }
+
+    if (itemRes && itemRes.status === 'CONFLICT') {
+      const unschedulable: UnschedulableDecision = {
+        status: 'UNSCHEDULABLE',
+        jobId: decision.jobId,
+        candidateWorkerCount: decision.candidateWorkerCount,
+        eligibleWorkerCount: decision.eligibleWorkerCount,
+        priority: decision.priority,
+        reason: 'LEASE_CONFLICT',
+        failureReasons: Object.freeze([
+          `Active lease already held by worker "${itemRes.currentOwnerId}" until ${itemRes.expiresAt.toISOString()}`,
+        ]),
+      };
+      this.logger?.warn('Scheduler placement failed due to active lease conflict', {
+        jobId: decision.jobId,
+        currentOwnerId: itemRes.currentOwnerId,
+        expiresAt: itemRes.expiresAt,
+      });
+      return unschedulable;
+    }
+
+    const details =
+      (itemRes && 'details' in itemRes ? itemRes.details : undefined) ?? 'Job not claimable';
+    const unschedulable: UnschedulableDecision = {
+      status: 'UNSCHEDULABLE',
+      jobId: decision.jobId,
+      candidateWorkerCount: decision.candidateWorkerCount,
+      eligibleWorkerCount: decision.eligibleWorkerCount,
+      priority: decision.priority,
+      reason: 'LEASE_CONFLICT',
+      failureReasons: Object.freeze([details]),
+    };
+    this.logger?.warn('Scheduler placement failed: job not claimable', {
+      jobId: decision.jobId,
+      reason: itemRes && 'reason' in itemRes ? itemRes.reason : undefined,
+      details,
+    });
+    return unschedulable;
+  }
+
+  /**
    * Helper to claim a worker lease for a placement decision.
    */
   private async claimLeaseForDecision(decision: ScheduledDecision): Promise<ScheduleDecision> {
     if (!this.leaseRepository) {
       return decision;
+    }
+
+    // Uniform durable path: with a publisher AND batch claiming, route even single
+    // placements through `claimBatch` so the `JobClaimed` row is co-committed with the
+    // lease INSERT rather than published best-effort afterwards.
+    if (this.outboxEnabled && typeof this.leaseRepository.claimBatch === 'function') {
+      const batchResult = await this.leaseRepository.claimBatch({
+        items: [
+          {
+            jobId: decision.jobId,
+            workerId: decision.workerId,
+            durationMs: this.leaseDurationMs,
+          },
+        ],
+        pendingOutbox: { rowForAcquired: this.jobClaimedRowMapper },
+      });
+      return this.decisionFromBatchItem(decision, batchResult.results[0]);
     }
 
     const claimResult = await this.leaseRepository.claim({
@@ -839,44 +949,12 @@ export class ForgeScheduler implements Scheduler {
     if (!this.recoveryService) {
       throw new Error('LeaseRecoveryService is required to recover expired leases');
     }
-    const result = await this.recoveryService.recoverExpiredLeases(options);
-    await this.publishWorkerLostForRecovery(result);
-    return result;
-  }
-
-  /**
-   * Publishes one `WorkerLost` event per lease actually reconciled by a recovery sweep.
-   * Idempotent `NO_OP` reconciliations (a concurrent runner already handled the lease) do
-   * not emit. Best-effort — a publication failure never changes the recovery outcome.
-   */
-  private async publishWorkerLostForRecovery(result: RecoverExpiredLeasesResult): Promise<void> {
-    if (!this.eventPublisher) {
-      return;
-    }
-    const emittableActions: readonly WorkerLostRecoveryAction[] = [
-      'REQUEUED',
-      'DEAD_LETTERED',
-      'SKIPPED_TERMINAL',
-    ];
-    for (const record of result.details) {
-      if (!emittableActions.includes(record.action as WorkerLostRecoveryAction)) {
-        continue;
-      }
-      await safePublish(
-        this.eventPublisher,
-        createForgeEvent('WorkerLost', {
-          correlation: { job_id: record.jobId, worker_id: record.workerId },
-          payload: {
-            worker_id: record.workerId,
-            job_id: record.jobId,
-            lease_id: record.leaseId,
-            recovery_action: record.action as WorkerLostRecoveryAction,
-            ...(record.deadLetterReason ? { dead_letter_reason: record.deadLetterReason } : {}),
-          },
-        }),
-        this.logger,
-      );
-    }
+    // `WorkerLost` is co-committed per non-`NO_OP` reconciled record inside the recovery
+    // transaction (single authoritative producer — never also published best-effort).
+    return this.recoveryService.recoverExpiredLeases(
+      options,
+      this.recoveryOutboxEnabled ? this.workerLostRowMapper : undefined,
+    );
   }
 
   /**

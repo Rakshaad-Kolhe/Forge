@@ -38,6 +38,10 @@ export interface WorkerLeaseRepository {
    *   for each attempted job matching the input order.
    * - Replaces expired active leases in bulk.
    * - Reduces database round-trips and transaction overhead from O(N) to O(1).
+   * - PR 21: when `options.pendingOutbox` is supplied, one outbox row per FRESH
+   *   acquisition (`status === 'ACQUIRED' && isIdempotent !== true`) is co-committed
+   *   in the same claim transaction as the lease INSERT; an enqueue failure rolls the
+   *   whole batch back and no lease is granted.
    */
   claimBatch?(options: BatchClaimOptions): Promise<BatchClaimResult>;
 

@@ -7,6 +7,19 @@ import {
   MIN_FAIRNESS_AGE_BONUS_STEP,
   DEFAULT_FAIRNESS_MAX_AGE_BONUS,
   MAX_FAIRNESS_AGE_BONUS_LIMIT,
+  DEFAULT_OUTBOX_DISPATCH_POLL_INTERVAL_MS,
+  DEFAULT_OUTBOX_DISPATCH_BATCH_SIZE,
+  DEFAULT_OUTBOX_CLAIM_TIMEOUT_MS,
+  DEFAULT_OUTBOX_PUBLISH_TIMEOUT_MS,
+  DEFAULT_OUTBOX_MAX_DELIVERY_ATTEMPTS,
+  MIN_OUTBOX_MAX_DELIVERY_ATTEMPTS,
+  MAX_OUTBOX_MAX_DELIVERY_ATTEMPTS,
+  DEFAULT_OUTBOX_DELIVERY_BASE_BACKOFF_MS,
+  DEFAULT_OUTBOX_DELIVERY_MAX_BACKOFF_MS,
+  DEFAULT_OUTBOX_MAX_PAYLOAD_BYTES,
+  DEFAULT_OUTBOX_RETENTION_MAX_AGE_MS,
+  DEFAULT_OUTBOX_RETENTION_BATCH_SIZE,
+  DEFAULT_OUTBOX_RETENTION_EVERY_N_TICKS,
 } from '@forge/contracts';
 
 /**
@@ -159,6 +172,90 @@ const configSchema = z
             `FAIRNESS_MAX_AGE_BONUS cannot exceed ${MAX_FAIRNESS_AGE_BONUS_LIMIT}`,
           ),
       ),
+    OUTBOX_DISPATCH_POLL_INTERVAL_MS: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_DISPATCH_POLL_INTERVAL_MS must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_DISPATCH_POLL_INTERVAL_MS))
+      .transform(Number)
+      .pipe(z.number().int().min(100, 'OUTBOX_DISPATCH_POLL_INTERVAL_MS must be at least 100ms')),
+    OUTBOX_DISPATCH_BATCH_SIZE: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_DISPATCH_BATCH_SIZE must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_DISPATCH_BATCH_SIZE))
+      .transform(Number)
+      .pipe(
+        z
+          .number()
+          .int()
+          .min(1, 'OUTBOX_DISPATCH_BATCH_SIZE must be at least 1')
+          .max(1000, 'OUTBOX_DISPATCH_BATCH_SIZE cannot exceed 1000'),
+      ),
+    OUTBOX_CLAIM_TIMEOUT_MS: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_CLAIM_TIMEOUT_MS must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_CLAIM_TIMEOUT_MS))
+      .transform(Number)
+      .pipe(z.number().int().min(1000, 'OUTBOX_CLAIM_TIMEOUT_MS must be at least 1000ms')),
+    OUTBOX_PUBLISH_TIMEOUT_MS: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_PUBLISH_TIMEOUT_MS must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_PUBLISH_TIMEOUT_MS))
+      .transform(Number)
+      .pipe(z.number().int().min(500, 'OUTBOX_PUBLISH_TIMEOUT_MS must be at least 500ms')),
+    OUTBOX_MAX_DELIVERY_ATTEMPTS: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_MAX_DELIVERY_ATTEMPTS must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_MAX_DELIVERY_ATTEMPTS))
+      .transform(Number)
+      .pipe(
+        z
+          .number()
+          .int()
+          .min(
+            MIN_OUTBOX_MAX_DELIVERY_ATTEMPTS,
+            `OUTBOX_MAX_DELIVERY_ATTEMPTS must be at least ${MIN_OUTBOX_MAX_DELIVERY_ATTEMPTS}`,
+          )
+          .max(
+            MAX_OUTBOX_MAX_DELIVERY_ATTEMPTS,
+            `OUTBOX_MAX_DELIVERY_ATTEMPTS cannot exceed ${MAX_OUTBOX_MAX_DELIVERY_ATTEMPTS}`,
+          ),
+      ),
+    OUTBOX_DELIVERY_BASE_BACKOFF_MS: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_DELIVERY_BASE_BACKOFF_MS must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_DELIVERY_BASE_BACKOFF_MS))
+      .transform(Number)
+      .pipe(z.number().int().min(50, 'OUTBOX_DELIVERY_BASE_BACKOFF_MS must be at least 50ms')),
+    OUTBOX_DELIVERY_MAX_BACKOFF_MS: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_DELIVERY_MAX_BACKOFF_MS must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_DELIVERY_MAX_BACKOFF_MS))
+      .transform(Number)
+      .pipe(z.number().int().min(1000, 'OUTBOX_DELIVERY_MAX_BACKOFF_MS must be at least 1000ms')),
+    OUTBOX_MAX_PAYLOAD_BYTES: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_MAX_PAYLOAD_BYTES must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_MAX_PAYLOAD_BYTES))
+      .transform(Number)
+      .pipe(z.number().int().min(1024, 'OUTBOX_MAX_PAYLOAD_BYTES must be at least 1024 bytes')),
+    OUTBOX_RETENTION_MAX_AGE_MS: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_RETENTION_MAX_AGE_MS must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_RETENTION_MAX_AGE_MS))
+      .transform(Number)
+      .pipe(z.number().int().min(0, 'OUTBOX_RETENTION_MAX_AGE_MS must be non-negative')),
+    OUTBOX_RETENTION_BATCH_SIZE: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_RETENTION_BATCH_SIZE must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_RETENTION_BATCH_SIZE))
+      .transform(Number)
+      .pipe(z.number().int().min(1, 'OUTBOX_RETENTION_BATCH_SIZE must be at least 1')),
+    OUTBOX_RETENTION_EVERY_N_TICKS: z
+      .string()
+      .regex(/^\d+$/, 'OUTBOX_RETENTION_EVERY_N_TICKS must be a valid integer')
+      .default(String(DEFAULT_OUTBOX_RETENTION_EVERY_N_TICKS))
+      .transform(Number)
+      .pipe(z.number().int().min(1, 'OUTBOX_RETENTION_EVERY_N_TICKS must be at least 1')),
   })
   .refine((data) => data.WORKER_HEARTBEAT_TTL_SECONDS * 1000 > data.WORKER_HEARTBEAT_INTERVAL_MS, {
     message:
@@ -186,6 +283,19 @@ const configSchema = z
   .refine((data) => data.FAIRNESS_MAX_AGE_BONUS >= data.FAIRNESS_AGE_BONUS_STEP, {
     message: 'FAIRNESS_MAX_AGE_BONUS must be greater than or equal to FAIRNESS_AGE_BONUS_STEP',
     path: ['FAIRNESS_MAX_AGE_BONUS'],
+  })
+  .refine(
+    (d) =>
+      d.OUTBOX_CLAIM_TIMEOUT_MS >= d.OUTBOX_PUBLISH_TIMEOUT_MS + d.OUTBOX_DISPATCH_POLL_INTERVAL_MS,
+    {
+      message:
+        'OUTBOX_CLAIM_TIMEOUT_MS must be >= OUTBOX_PUBLISH_TIMEOUT_MS + OUTBOX_DISPATCH_POLL_INTERVAL_MS',
+      path: ['OUTBOX_CLAIM_TIMEOUT_MS'],
+    },
+  )
+  .refine((d) => d.OUTBOX_DELIVERY_MAX_BACKOFF_MS >= d.OUTBOX_DELIVERY_BASE_BACKOFF_MS, {
+    message: 'OUTBOX_DELIVERY_MAX_BACKOFF_MS must be >= OUTBOX_DELIVERY_BASE_BACKOFF_MS',
+    path: ['OUTBOX_DELIVERY_MAX_BACKOFF_MS'],
   });
 
 export type RawConfigInput = Record<string, string | undefined>;
@@ -232,6 +342,17 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     FAIRNESS_AGING_INTERVAL_MS,
     FAIRNESS_AGE_BONUS_STEP,
     FAIRNESS_MAX_AGE_BONUS,
+    OUTBOX_DISPATCH_POLL_INTERVAL_MS,
+    OUTBOX_DISPATCH_BATCH_SIZE,
+    OUTBOX_CLAIM_TIMEOUT_MS,
+    OUTBOX_PUBLISH_TIMEOUT_MS,
+    OUTBOX_MAX_DELIVERY_ATTEMPTS,
+    OUTBOX_DELIVERY_BASE_BACKOFF_MS,
+    OUTBOX_DELIVERY_MAX_BACKOFF_MS,
+    OUTBOX_MAX_PAYLOAD_BYTES,
+    OUTBOX_RETENTION_MAX_AGE_MS,
+    OUTBOX_RETENTION_BATCH_SIZE,
+    OUTBOX_RETENTION_EVERY_N_TICKS,
   } = result.data;
 
   return {
@@ -256,5 +377,16 @@ export function loadConfig(env: RawConfigInput = process.env): AppConfig {
     fairnessAgingIntervalMs: FAIRNESS_AGING_INTERVAL_MS,
     fairnessAgeBonusStep: FAIRNESS_AGE_BONUS_STEP,
     fairnessMaxAgeBonus: FAIRNESS_MAX_AGE_BONUS,
+    outboxDispatchPollIntervalMs: OUTBOX_DISPATCH_POLL_INTERVAL_MS,
+    outboxDispatchBatchSize: OUTBOX_DISPATCH_BATCH_SIZE,
+    outboxClaimTimeoutMs: OUTBOX_CLAIM_TIMEOUT_MS,
+    outboxPublishTimeoutMs: OUTBOX_PUBLISH_TIMEOUT_MS,
+    outboxMaxDeliveryAttempts: OUTBOX_MAX_DELIVERY_ATTEMPTS,
+    outboxDeliveryBaseBackoffMs: OUTBOX_DELIVERY_BASE_BACKOFF_MS,
+    outboxDeliveryMaxBackoffMs: OUTBOX_DELIVERY_MAX_BACKOFF_MS,
+    outboxMaxPayloadBytes: OUTBOX_MAX_PAYLOAD_BYTES,
+    outboxRetentionMaxAgeMs: OUTBOX_RETENTION_MAX_AGE_MS,
+    outboxRetentionBatchSize: OUTBOX_RETENTION_BATCH_SIZE,
+    outboxRetentionEveryNTicks: OUTBOX_RETENTION_EVERY_N_TICKS,
   };
 }

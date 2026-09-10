@@ -11,6 +11,7 @@ export {
   DatabaseError,
   EntityNotFoundError,
   MigrationError,
+  OutboxPayloadError,
   PersistenceError,
   sanitizeConnectionString,
 } from './errors.js';
@@ -33,6 +34,14 @@ export type {
 } from './repositories/contracts/dead-letter-repository.contract.js';
 export type { JobAttemptRepository } from './repositories/contracts/job-attempt-repository.contract.js';
 export type { JobRepository } from './repositories/contracts/job-repository.contract.js';
+export type {
+  OutboxClaimedRow,
+  OutboxClaimOptions,
+  OutboxMarkOutcome,
+  OutboxRepository,
+  OutboxRetryInput,
+  OutboxStats,
+} from './repositories/contracts/outbox-repository.contract.js';
 export type { PipelineRepository } from './repositories/contracts/pipeline-repository.contract.js';
 export type { PipelineRunRepository } from './repositories/contracts/pipeline-run-repository.contract.js';
 export type { WorkerLeaseRepository } from './repositories/contracts/worker-lease-repository.contract.js';
@@ -47,13 +56,21 @@ export type {
 export { PgDeadLetterRepository } from './repositories/pg-dead-letter-repository.js';
 export { PgJobAttemptRepository } from './repositories/pg-job-attempt-repository.js';
 export { PgJobRepository } from './repositories/pg-job-repository.js';
+export {
+  PgOutboxRepository,
+  type PgOutboxRepositoryOptions,
+} from './repositories/pg-outbox-repository.js';
 export { PgPipelineRepository } from './repositories/pg-pipeline-repository.js';
 export { PgPipelineRunRepository } from './repositories/pg-pipeline-run-repository.js';
 export { PgWorkerLeaseRepository } from './repositories/pg-worker-lease-repository.js';
 export { PgWorkerRepository } from './repositories/pg-worker-repository.js';
 
 // Recovery Services
-export { LeaseRecoveryService, type RecoveryLogger } from './lease-recovery-service.js';
+export {
+  LeaseRecoveryService,
+  type OutboxRowForRecoveredLease,
+  type RecoveryLogger,
+} from './lease-recovery-service.js';
 
 // Transactions
 export { type TransactionContext, withTransaction } from './transaction.js';
@@ -66,6 +83,7 @@ export type {
   DeadLetterJobRow,
   JobAttemptRow,
   JobRow,
+  OutboxEventRow,
   PipelineRow,
   PipelineRunRow,
   WorkerLeaseRow,

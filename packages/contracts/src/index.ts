@@ -67,6 +67,17 @@ export interface AppConfig {
   fairnessAgingIntervalMs: number;
   fairnessAgeBonusStep: number;
   fairnessMaxAgeBonus: number;
+  outboxDispatchPollIntervalMs: number;
+  outboxDispatchBatchSize: number;
+  outboxClaimTimeoutMs: number;
+  outboxPublishTimeoutMs: number;
+  outboxMaxDeliveryAttempts: number;
+  outboxDeliveryBaseBackoffMs: number;
+  outboxDeliveryMaxBackoffMs: number;
+  outboxMaxPayloadBytes: number;
+  outboxRetentionMaxAgeMs: number;
+  outboxRetentionBatchSize: number;
+  outboxRetentionEveryNTicks: number;
 }
 
 /**
@@ -230,6 +241,16 @@ export interface BatchClaimItem {
 export interface BatchClaimOptions {
   readonly items: readonly BatchClaimItem[];
   readonly defaultDurationMs?: number;
+  /**
+   * PR 21: when set, `claimBatch` inserts one outbox row per FRESH `ACQUIRED` item
+   * (`isIdempotent !== true`) inside the same transaction as the lease INSERT.
+   * `rowForAcquired` is a pure mapper — returns data, runs no SQL, is not given the
+   * transaction client. It must be a function (not a pre-built map) because the mapped
+   * `JobClaimed` payload needs the freshly-minted `lease_id` / `lease_expires_at`.
+   */
+  readonly pendingOutbox?: {
+    readonly rowForAcquired: (item: BatchClaimItem, lease: WorkerLease) => OutboxEnqueueInput;
+  };
 }
 
 /**
@@ -526,3 +547,127 @@ export interface LeaseRecoveryOptions {
   readonly batchSize?: number;
   readonly now?: Date;
 }
+
+/**
+ * --- Transactional Outbox (PR 21) ---
+ */
+
+/**
+ * Lifecycle status of an outbox event.
+ */
+export type OutboxStatus = 'PENDING' | 'CLAIMED' | 'PUBLISHED' | 'DEAD';
+
+/**
+ * Correlation identifiers linking outbox events to job execution context.
+ */
+export interface OutboxCorrelation {
+  readonly pipelineId?: string;
+  readonly runId?: string;
+  readonly jobId?: string;
+  readonly attemptId?: string;
+  readonly workerId?: string;
+}
+
+/**
+ * Parameters for enqueuing an outbox event for transactional delivery.
+ */
+export interface OutboxEnqueueInput {
+  readonly id: string; // 'outbox_' + uuid, caller-generated
+  readonly eventId: string; // ForgeEvent.event_id
+  readonly eventType: string;
+  readonly version: number;
+  readonly occurredAt: string; // ISO-8601
+  readonly correlation: OutboxCorrelation;
+  readonly payload: Record<string, unknown>; // complete pre-validated envelope
+}
+
+/**
+ * Durable record of an outbox event stored in persistent storage.
+ */
+export interface OutboxEventRecord {
+  readonly id: string;
+  readonly eventId: string;
+  readonly eventType: string;
+  readonly version: number;
+  readonly occurredAt: Date;
+  readonly pipelineId?: string;
+  readonly runId?: string;
+  readonly jobId?: string;
+  readonly attemptId?: string;
+  readonly workerId?: string;
+  readonly payload: Record<string, unknown>;
+  readonly status: OutboxStatus;
+  readonly deliveryAttemptCount: number;
+  readonly dispatchCount: number;
+  readonly availableAt: Date;
+  readonly claimedAt?: Date;
+  readonly claimedBy?: string;
+  readonly publishedAt?: Date;
+  readonly lastError?: string;
+  readonly createdAt: Date;
+}
+
+/**
+ * Default poll interval (1,000 ms) for outbox dispatch worker.
+ */
+export const DEFAULT_OUTBOX_DISPATCH_POLL_INTERVAL_MS = 1000;
+
+/**
+ * Default batch size for outbox dispatch operations.
+ */
+export const DEFAULT_OUTBOX_DISPATCH_BATCH_SIZE = 100;
+
+/**
+ * Default timeout (60,000 ms) for claiming an outbox event.
+ */
+export const DEFAULT_OUTBOX_CLAIM_TIMEOUT_MS = 60000;
+
+/**
+ * Default timeout (10,000 ms) for publishing a claimed outbox event.
+ */
+export const DEFAULT_OUTBOX_PUBLISH_TIMEOUT_MS = 10000;
+
+/**
+ * Default maximum delivery attempts for an outbox event.
+ */
+export const DEFAULT_OUTBOX_MAX_DELIVERY_ATTEMPTS = 10;
+
+/**
+ * Minimum permitted maximum delivery attempts.
+ */
+export const MIN_OUTBOX_MAX_DELIVERY_ATTEMPTS = 1;
+
+/**
+ * Maximum permitted maximum delivery attempts.
+ */
+export const MAX_OUTBOX_MAX_DELIVERY_ATTEMPTS = 100;
+
+/**
+ * Default base backoff (500 ms) for exponential retry of delivery failures.
+ */
+export const DEFAULT_OUTBOX_DELIVERY_BASE_BACKOFF_MS = 500;
+
+/**
+ * Default maximum backoff (60,000 ms) for exponential retry of delivery failures.
+ */
+export const DEFAULT_OUTBOX_DELIVERY_MAX_BACKOFF_MS = 60000;
+
+/**
+ * Default maximum payload size (65,536 bytes) for outbox events.
+ */
+export const DEFAULT_OUTBOX_MAX_PAYLOAD_BYTES = 65536;
+
+/**
+ * Default retention age (604,800,000 ms / 7 days); 0 disables retention cleanup.
+ */
+export const DEFAULT_OUTBOX_RETENTION_MAX_AGE_MS = 604800000;
+
+/**
+ * Default batch size for outbox retention cleanup operations.
+ */
+export const DEFAULT_OUTBOX_RETENTION_BATCH_SIZE = 500;
+
+/**
+ * Default frequency (every 60 ticks) for outbox retention cleanup sweep.
+ */
+export const DEFAULT_OUTBOX_RETENTION_EVERY_N_TICKS = 60;
